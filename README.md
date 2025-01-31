@@ -42,12 +42,10 @@ A comprehensive ad-blocking solution that combines network-wide blocking with a 
    ```bash
    pip install requests
 3. Run the script:
-On Windows:
+   On Windows, Linux/macOS:
       ```bash
       python one_for_all.py
 
-On Linux/macOS:
-      ```bash
       sudo python3 one_for_all.py
       
 4. Follow the on-screen instructions provided by the GUI wizard.
