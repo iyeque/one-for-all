@@ -1,0 +1,37 @@
+# Byte-compiled Python files
+__pycache__/
+*.py[cod]
+
+# Distribution / packaging
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Backup files
+*.bak
+*.tmp
+
+# Log files
+*.log
+
+# AdGuard Home binaries (if downloaded during installation)
+AdGuardHome/
+adguardhome.zip
+adguardhome.tar.gz
+
+# Browser extension temporary files
+one-for-all-extension/*.crx
+one-for-all-extension/*.zip
