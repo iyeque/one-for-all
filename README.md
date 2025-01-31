@@ -37,5 +37,42 @@ A comprehensive ad-blocking solution that combines network-wide blocking with a 
 1. Clone this repository:
    ```bash
    git clone https://github.com/<your-username>/one-for-all.git
-   cd one-for-all
-   
+   cd one-for-all 
+2. Install required dependencies:
+   ```bash
+   pip install requests
+3. Run the script:
+On Windows:
+      ```bash
+      python one_for_all.py
+
+On Linux/macOS:
+      ```bash
+      sudo python3 one_for_all.py
+      
+4. Follow the on-screen instructions provided by the GUI wizard.
+
+## Usage
+Once installed:
+
+Access AdGuard Home's web interface at http://localhost:3000 to configure additional settings.
+Use the custom browser extension by loading it as an unpacked extension in your browser.
+
+## Third-Party Software
+This project uses the following third-party software:
+
+AdGuard Home : A network-wide ad blocker and DNS server.
+Repository: https://github.com/AdguardTeam/AdGuardHome
+License: GNU General Public License v3.0 (GPLv3)
+EasyList : A popular ad-blocking filter list.
+Source: https://easylist.to/easylist/easylist.txt
+
+## Contributing
+Contributions are welcome! If you'd like to contribute to this project, please follow these steps:
+
+## Fork the repository.
+Create a new branch (git checkout -b feature/YourFeatureName).
+Commit your changes (git commit -m "Add YourFeatureName").
+Push to the branch (git push origin feature/YourFeatureName).
+Open a pull request.
+Please ensure your code adheres to the existing style and includes appropriate documentation.
