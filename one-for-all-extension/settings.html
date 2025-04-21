@@ -1,0 +1,139 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+  <title>One for All Settings</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+    }
+    h1 {
+      font-size: 24px;
+    }
+    label {
+      display: block;
+      margin-top: 10px;
+    }
+    input[type="text"], textarea {
+      width: 100%;
+      padding: 5px;
+      margin-top: 5px;
+    }
+    button {
+      margin-top: 20px;
+      padding: 10px 20px;
+      background-color: #007bff;
+      color: white;
+      border: none;
+      cursor: pointer;
+    }
+    button:hover {
+      background-color: #0056b3;
+    }
+    #successMessage {
+      color: green;
+      margin-top: 10px;
+      display: none;
+    }
+    @media (max-width: 600px) {
+      input[type="text"], textarea {
+        width: 100%;
+      }
+      button {
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <h1>One for All Settings</h1>
+  
+  <!-- Blocklist Settings -->
+  <label for="blocklists">Custom Blocklists (comma-separated URLs):</label>
+  <input type="text" id="blocklists" placeholder="https://example.com/blocklist.txt, https://another.com/blocklist.txt">
+  <button id="save">Save Settings</button>
+  <div id="successMessage">Settings saved successfully!</div>
+
+  <!-- Feedback Section -->
+  <h2>Report Issues or Suggest Improvements</h2>
+  <p>If you notice any issues or have suggestions for improvement, please let us know!</p>
+  <label for="feedback">Your Feedback:</label>
+  <textarea id="feedback" rows="5" placeholder="Describe the issue or suggestion..."></textarea>
+  <button id="sendFeedback">Send Feedback</button>
+
+  <script>
+    document.addEventListener("DOMContentLoaded", async () => {
+      const blocklistsInput = document.getElementById("blocklists");
+      const saveButton = document.getElementById("save");
+      const feedbackInput = document.getElementById("feedback");
+      const sendFeedbackButton = document.getElementById("sendFeedback");
+      const successMessage = document.getElementById("successMessage");
+
+      // Load saved blocklists
+      const storedBlocklists = await chrome.storage.sync.get("blocklists");
+      blocklistsInput.value = storedBlocklists.blocklists ? storedBlocklists.blocklists.join(", ") : "";
+
+      // Save blocklists
+      saveButton.addEventListener("click", async () => {
+        const blocklists = blocklistsInput.value.split(",").map(url => url.trim());
+
+        // Validate URLs
+        function isValidUrl(url) {
+          try {
+            new URL(url);
+            return true;
+          } catch (e) {
+            return false;
+          }
+        }
+
+        const validBlocklists = blocklists.filter(isValidUrl);
+
+        if (validBlocklists.length !== blocklists.length) {
+          alert("Some URLs are invalid. Please check your input.");
+          return;
+        }
+
+        await chrome.storage.sync.set({ blocklists: validBlocklists });
+
+        // Show success message
+        successMessage.style.display = "block";
+        setTimeout(() => {
+          successMessage.style.display = "none";
+        }, 3000);
+      });
+
+      // Send Feedback
+      sendFeedbackButton.addEventListener("click", async () => {
+        const feedback = feedbackInput.value.trim();
+        if (!feedback) {
+          alert("Please provide some feedback before submitting.");
+          return;
+        }
+
+        try {
+          // Example: Send feedback to Formspree
+          const response = await fetch("https://formspree.io/f/your-form-id", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ feedback })
+          });
+
+          if (response.ok) {
+            alert("Thank you for your feedback! We'll review it soon.");
+            feedbackInput.value = ""; // Clear the feedback box
+          } else {
+            alert("Failed to submit feedback. Please try again later.");
+          }
+        } catch (error) {
+          console.error("Error submitting feedback:", error);
+          alert("An error occurred while submitting feedback. Please try again later.");
+        }
+      });
+    });
+  </script>
+</body>
+</html>

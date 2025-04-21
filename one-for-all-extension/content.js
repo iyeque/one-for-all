@@ -1,22 +1,30 @@
 
 const adSelectors = [
-  "div[id*='ad-']",
-  "iframe[src*='ads']",
-  "img[src*='ads']",
-  ".ad",
-  "#ad",
-  ".advertisement"
+  // Generic ad selectors
+  "div[id*='ad-']", "div[id*='ads-']", "div[class*='ad-']", "div[class*='ads-']",
+  "iframe[src*='ad']", "iframe[src*='ads']", "iframe[id*='ad']", "iframe[id*='ads']",
+  "img[src*='ad']", "img[src*='ads']", "img[id*='ad']", "img[id*='ads']",
+  ".ad", ".ads", ".advertisement", ".advert", ".sponsored",
+  "#ad", "#ads", "#advertisement", "#advert",
+  // Banner and sponsored content
+  "[class*='banner']", "[id*='banner']",
+  "[class*='sponsor']", "[id*='sponsor']",
+  // Additional common ad patterns
+  "[class*='adsbox']", "[id*='adsbox']",
+  "[class*='adunit']", "[id*='adunit']",
+  "[data-ad]", "[data-ads]", "[data-adunit]"
 ];
 
+import { hideElements, createDOMObserver } from './utils/dom-utils.js';
+
 function hideAds() {
-  adSelectors.forEach(selector => {
-    const ads = document.querySelectorAll(selector);
-    ads.forEach(ad => {
-      ad.style.display = "none";
-      console.log(`Hidden ad element: ${selector}`);
-    });
-  });
+  hideElements(adSelectors, 'ad');
 }
 
-document.addEventListener("DOMContentLoaded", hideAds);
-setInterval(hideAds, 2000);
+const observer = createDOMObserver(hideAds);
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", hideAds);
+} else {
+  hideAds();
+}
