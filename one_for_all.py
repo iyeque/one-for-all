@@ -14,6 +14,13 @@ import logging
 import json
 import sys
 
+# Import PIL for icon generation
+try:
+    from PIL import Image, ImageDraw
+except ImportError:
+    # Will be handled by check_requirements function
+    pass
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -64,20 +71,25 @@ def load_config():
 
 def is_admin():
     """Check if the script is running with elevated privileges."""
-    try:
+    # For Linux/macOS
+    if hasattr(os, 'getuid'):
         try:
-            try:
-                return os.getuid() == 0  # For Linux/macOS
-            except AttributeError:
-                return False  # Not available on this platform
-        except AttributeError:
-            return False  # Not available on this platform
-    except AttributeError:
-        import ctypes
-        is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0  # For Windows
-        if not is_admin:
-            logger.warning("Script is not running with administrator privileges")
-        return is_admin
+            return os.getuid() == 0
+        except Exception as e:
+            logger.error(f"Failed to check admin privileges (Unix method): {e}")
+            return False
+    
+    # For Windows
+    else:
+        try:
+            import ctypes
+            is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
+            if not is_admin:
+                logger.warning("Script is not running with administrator privileges")
+            return is_admin
+        except Exception as e:
+            logger.error(f"Failed to check admin privileges (Windows method): {e}")
+            return False
 
 def check_requirements():
     """Check if all required modules are installed."""
@@ -528,6 +540,23 @@ def setup_browser_extension(progress_callback=None):
     }
   },
   "options_page": "settings.html"
+},
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "icons": {
+    "48": "icon.png"
+  },
+  "action": {
+    "default_icon": {
+      "48": "icon.png"
+    }
+  },
+  "options_page": "settings.html"
 }
 """
     write_file_if_not_exists(os.path.join(extension_dir, "manifest.json"), manifest_content)
@@ -904,6 +933,63 @@ document.addEventListener('visibilitychange', () => {
 """
     write_file_if_not_exists(os.path.join(extension_dir, "settings.html"), settings_html_content)
 
+    # Create settings.js file for functionality
+    settings_js_content = """
+document.addEventListener('DOMContentLoaded', function() {
+  const enableToggle = document.getElementById('enableToggle');
+  const blocklistsInput = document.getElementById('blocklists');
+  const saveButton = document.getElementById('save');
+  const successMessage = document.getElementById('successMessage');
+  const adsBlockedToday = document.getElementById('adsBlockedToday');
+  const totalAdsBlocked = document.getElementById('totalAdsBlocked');
+  const lastUpdate = document.getElementById('lastUpdate');
+
+  // Hide success message initially
+  successMessage.style.display = 'none';
+
+  // Load saved settings
+  chrome.storage.sync.get(['isEnabled', 'blocklists', 'adsBlockedToday', 'totalAdsBlocked', 'lastUpdateTime'], function(data) {
+    if (data.isEnabled !== undefined) {
+      enableToggle.checked = data.isEnabled;
+    }
+    
+    if (data.blocklists) {
+      blocklistsInput.value = data.blocklists.join(', ');
+    }
+    
+    if (data.adsBlockedToday) {
+      adsBlockedToday.textContent = data.adsBlockedToday;
+    }
+    
+    if (data.totalAdsBlocked) {
+      totalAdsBlocked.textContent = data.totalAdsBlocked;
+    }
+    
+    if (data.lastUpdateTime) {
+      lastUpdate.textContent = new Date(data.lastUpdateTime).toLocaleString();
+    }
+  });
+
+  // Save settings
+  saveButton.addEventListener('click', function() {
+    const isEnabled = enableToggle.checked;
+    let blocklists = [];
+    
+    if (blocklistsInput.value.trim()) {
+      blocklists = blocklistsInput.value.split(',').map(url => url.trim()).filter(url => url);
+    }
+    
+    chrome.storage.sync.set({ isEnabled, blocklists }, function() {
+      successMessage.style.display = 'block';
+      setTimeout(() => {
+        successMessage.style.display = 'none';
+      }, 3000);
+    });
+  });
+});
+"""
+    write_file_if_not_exists(os.path.join(extension_dir, "settings.js"), settings_js_content)
+
     # Add separate CSS file for better maintainability
     settings_css_content = """
 :root {
@@ -937,18 +1023,22 @@ body {
             try:
                 # Copy the custom icon to the extension directory
                 shutil.copy(custom_icon_path, icon_path)
-                print("Custom icon copied successfully.")
+                logger.info("Custom icon copied successfully.")
             except Exception as e:
-                print(f"Failed to copy custom icon: {e}")
+                logger.error(f"Failed to copy custom icon: {e}")
                 generate_default_icon(icon_path)
         else:
-            print("Custom icon not found, generating default icon.")
+            logger.info("Custom icon not found, generating default icon.")
             generate_default_icon(icon_path)
     else:
-        print("Icon already exists, skipping copy.")
+        logger.info("Icon already exists, skipping copy.")
 
-    print(f"'One for All' browser extension created at {extension_dir}.")
-    print("Manually load the unpacked extension in your browser.")
+    logger.info(f"'One for All' browser extension created at {extension_dir}.")
+    logger.info("Manually load the unpacked extension in your browser.")
+    
+    if progress_callback:
+        progress_callback(95, "Browser extension created successfully")
+    return True
 
 def gui_wizard():
     def update_progress(value, message=""):
@@ -1087,8 +1177,13 @@ def gui_wizard():
 def generate_default_icon(icon_path):
     """Generate a default icon if the custom icon is missing."""
     try:
-        from PIL import Image, ImageDraw
-        
+        # Check if PIL is available before attempting to use it
+        try:
+            from PIL import Image, ImageDraw
+        except ImportError:
+            logger.error("PIL library not found. Cannot generate default icon.")
+            return False
+            
         # Create a new 48x48 image with a blue background
         img = Image.new('RGB', (48, 48), color=(0, 123, 255))
         draw = ImageDraw.Draw(img)
@@ -1099,13 +1194,10 @@ def generate_default_icon(icon_path):
         
         # Save the image
         img.save(icon_path)
-        print(f"Generated default icon at {icon_path}")
+        logger.info(f"Generated default icon at {icon_path}")
         return True
-    except ImportError:
-        print("PIL library not found. Cannot generate default icon.")
-        return False
     except Exception as e:
-        print(f"Error generating default icon: {e}")
+        logger.error(f"Error generating default icon: {e}")
         return False
 
 
