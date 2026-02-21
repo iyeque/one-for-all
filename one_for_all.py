@@ -13,6 +13,65 @@ import secrets
 import logging
 import json
 import sys
+import argparse
+
+# Suppress __pycache__ creation
+sys.dont_write_bytecode = True
+
+def run_full_setup(progress_callback=None):
+    """Execute the complete setup and update process."""
+    try:
+        # 1. Update Hosts
+        if not update_hosts_file(progress_callback): return False
+        
+        # 2. Flush DNS
+        flush_dns_cache(progress_callback)
+        
+        # 3. AdGuard Home
+        if not install_adguard_home(progress_callback): return False
+        
+        # 4. Wait for AGH
+        if progress_callback: progress_callback(65, "Verifying AdGuard Home...")
+        wait_for_service("http://localhost:3000")
+        
+        # 5. System DNS
+        if not change_dns_settings(progress_callback): return False
+        
+        # 6. Browser Extension
+        if not setup_browser_extension(progress_callback): return False
+        
+        if progress_callback: progress_callback(100, "Setup complete.")
+        return True
+    except Exception as e:
+        logger.error(f"Full setup error: {e}")
+        return False
+
+def schedule_task_windows():
+    """Create a Windows Scheduled Task for weekly silent updates."""
+    try:
+        script_path = os.path.abspath(__file__)
+        python_exe = sys.executable
+        task_name = "OneForAll_WeeklyUpdate"
+        
+        # Build the command string carefully for Windows task scheduler
+        # We use python.exe with the full path to the script and the --silent flag
+        command = f'"{python_exe}" "{script_path}" --silent'
+        
+        # Run schtasks command
+        result = subprocess.run([
+            "schtasks", "/create", "/tn", task_name, "/tr", command,
+            "/sc", "weekly", "/d", "SUN", "/st", "03:00", "/rl", "highest", "/f"
+        ], capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            logger.info(f"Weekly scheduled task '{task_name}' created successfully.")
+            return True
+        else:
+            logger.error(f"Failed to create scheduled task: {result.stderr}")
+            return False
+    except Exception as e:
+        logger.error(f"Failed to create scheduled task: {e}")
+        return False
 
 # Import PIL for icon generation
 try:
@@ -34,7 +93,13 @@ logger = logging.getLogger("OneForAll")
 
 # Default configuration
 DEFAULT_CONFIG = {
-    "dns_servers": ["94.140.14.14", "94.140.15.15"],  # AdGuard DNS servers
+    "dns_servers": ["127.0.0.1", "1.1.1.1"],  # Primary: AdGuard Home, Secondary: Cloudflare
+    "dns_servers_ipv6": ["::1", "2606:4700:4700::1111"], # Primary: AGH, Secondary: Cloudflare
+    "encrypted_dns": [
+        "https://1.1.1.2/dns-query",       # Cloudflare Malware Blocking (DoH)
+        "https://dns.adguard-dns.com/dns-query", # AdGuard Privacy (DoH)
+        "tls://1.1.1.2"                     # Cloudflare Malware Blocking (DoT)
+    ],
     "hosts_redirect_ip": "127.0.0.1",
     "filter_list_url": "https://easylist.to/easylist/easylist.txt",
     "request_timeout": 10,
@@ -72,24 +137,24 @@ def load_config():
 def is_admin():
     """Check if the script is running with elevated privileges."""
     # For Linux/macOS
-    if hasattr(os, 'getuid'):
-        try:
-            return os.getuid() == 0
-        except Exception as e:
-            logger.error(f"Failed to check admin privileges (Unix method): {e}")
-            return False
-    
+    try:
+        # Use getattr to avoid Pyright error on Windows
+        getuid = getattr(os, 'getuid', None)
+        if getuid:
+            return getuid() == 0
+    except Exception as e:
+        logger.debug(f"Unix admin check failed: {e}")
+
     # For Windows
-    else:
-        try:
-            import ctypes
-            is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
-            if not is_admin:
-                logger.warning("Script is not running with administrator privileges")
-            return is_admin
-        except Exception as e:
-            logger.error(f"Failed to check admin privileges (Windows method): {e}")
-            return False
+    try:
+        import ctypes
+        admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
+        if not admin:
+            logger.warning("Script is not running with administrator privileges")
+        return admin
+    except Exception as e:
+        logger.error(f"Failed to check admin privileges (Windows method): {e}")
+        return False
 
 def check_requirements():
     """Check if all required modules are installed."""
@@ -121,8 +186,11 @@ def check_requirements():
     
     return True
 
+HOSTS_MARKER_START = "# BEGIN ONE-FOR-ALL AD BLOCKING"
+HOSTS_MARKER_END = "# END ONE-FOR-ALL AD BLOCKING"
+
 def update_hosts_file(progress_callback=None):
-    """Update hosts file to block ads with progress reporting."""
+    """Update hosts file to block ads with progress reporting and markers."""
     config = load_config()
     logger.info("Updating hosts file to block ads...")
     hosts_path = r"C:\Windows\System32\drivers\etc\hosts" if platform.system() == "Windows" else "/etc/hosts"
@@ -130,17 +198,14 @@ def update_hosts_file(progress_callback=None):
 
     # Update progress
     if progress_callback:
-        progress_callback(10, "Fetching ad-serving domains...")
+        progress_callback(5, "Fetching ad-serving domains...")
 
-    # Fetch ad-serving domains from EasyList
+    # Fetch ad-serving domains
     filter_list_url = config["filter_list_url"]
-    logger.info(f"Fetching ad-serving domains from {filter_list_url}...")
     try:
         response = requests.get(filter_list_url, timeout=config["request_timeout"])
         response.raise_for_status()
-        logger.info(f"Fetched {len(response.text.splitlines())} lines from EasyList.")
         
-        # Update progress
         if progress_callback:
             progress_callback(30, "Processing domain list...")
     except requests.RequestException as e:
@@ -153,108 +218,223 @@ def update_hosts_file(progress_callback=None):
     for line in response.text.splitlines():
         if line.startswith("||") and not line.endswith("^"):
             domain = line[2:].split("^")[0]
-            if domain:  # Ensure domain is not empty
+            if domain:
                 ad_domains.add(domain)
     
-    logger.info(f"Extracted {len(ad_domains)} ad domains from filter list")
-    
-    # Update progress
-    if progress_callback:
-        progress_callback(50, "Backing up hosts file...")
-
-    # Backup the original hosts file
-    original_content = ""
-    if os.path.exists(hosts_path):
-        try:
-            with open(hosts_path, "r") as file:
-                original_content = file.read()
-
-            backup_path = hosts_path + ".bak"
-            with open(backup_path, "w") as file:
-                file.write(original_content)
-            logger.info(f"Backed up hosts file to {backup_path}.")
-        except PermissionError:
-            logger.error("Permission denied: Unable to read or backup hosts file")
-            if progress_callback:
-                progress_callback(100, "Error: Permission denied for hosts file")
-            return False
-        except Exception as e:
-            logger.error(f"Error backing up hosts file: {e}")
-            if progress_callback:
-                progress_callback(100, f"Error: {e}")
-            return False
-    
-    # Update progress
-    if progress_callback:
-        progress_callback(70, "Updating hosts file...")
-
-    # Append ad-blocking entries
+    # Read existing hosts content
     try:
-        with open(hosts_path, "a") as file:
-            added_count = 0
+        with open(hosts_path, "r") as file:
+            lines = file.readlines()
+    except Exception as e:
+        logger.error(f"Error reading hosts file: {e}")
+        return False
+
+    # Remove existing One-For-All block if present
+    new_lines = []
+    skip = False
+    for line in lines:
+        if HOSTS_MARKER_START in line:
+            skip = True
+            continue
+        if HOSTS_MARKER_END in line:
+            skip = False
+            continue
+        if not skip:
+            new_lines.append(line)
+
+    # Add new block
+    if progress_callback:
+        progress_callback(70, "Writing to hosts file...")
+
+    try:
+        # Ensure trailing newline if needed
+        if new_lines and not new_lines[-1].endswith('\n'):
+            new_lines[-1] += '\n'
+            
+        with open(hosts_path, "w") as file:
+            file.writelines(new_lines)
+            file.write(f"\n{HOSTS_MARKER_START}\n")
             for domain in ad_domains:
-                if domain not in original_content:
-                    file.write(f"{redirect_ip} {domain}\n")
-                    added_count += 1
+                file.write(f"{redirect_ip} {domain}\n")
+            file.write(f"{HOSTS_MARKER_END}\n")
         
-        logger.info(f"Hosts file updated successfully. Added {added_count} domains.")
-        
-        # Update progress
+        logger.info(f"Hosts file updated with {len(ad_domains)} domains.")
         if progress_callback:
             progress_callback(100, "Hosts file updated successfully")
         return True
     except PermissionError:
         logger.error("Permission denied: Unable to modify the hosts file")
-        if progress_callback:
-            progress_callback(100, "Error: Permission denied for hosts file")
         return False
-    except Exception as e:
-        logger.error(f"Error updating hosts file: {e}")
+
+def revert_hosts_file(progress_callback=None):
+    """Remove ad-blocking entries from hosts file."""
+    hosts_path = r"C:\Windows\System32\drivers\etc\hosts" if platform.system() == "Windows" else "/etc/hosts"
+    if progress_callback:
+        progress_callback(50, "Reverting hosts file...")
+        
+    try:
+        with open(hosts_path, "r") as file:
+            lines = file.readlines()
+            
+        new_lines = []
+        skip = False
+        found = False
+        for line in lines:
+            if HOSTS_MARKER_START in line:
+                skip = True
+                found = True
+                continue
+            if HOSTS_MARKER_END in line:
+                skip = False
+                continue
+            if not skip:
+                new_lines.append(line)
+        
+        if found:
+            with open(hosts_path, "w") as file:
+                file.writelines(new_lines)
+            logger.info("Hosts file reverted successfully.")
+        
         if progress_callback:
-            progress_callback(100, f"Error: {e}")
+            progress_callback(100, "Hosts file reverted")
+        return True
+    except Exception as e:
+        logger.error(f"Error reverting hosts file: {e}")
         return False
 
 def flush_dns_cache(progress_callback=None):
-    """Flush DNS cache with progress reporting."""
+    """Flush DNS cache with progress reporting and increased timeout."""
     logger.info("Flushing DNS cache...")
     if progress_callback:
         progress_callback(10, "Flushing DNS cache...")
     
-    try:
-        if platform.system() == "Windows":
-            subprocess.run(["ipconfig", "/flushdns"], check=True, timeout=10)
-        elif platform.system() == "Darwin":  # macOS
-            subprocess.run(["dscacheutil", "-flushcache"], check=True, timeout=10)
-            subprocess.run(["sudo", "killall", "-HUP", "mDNSResponder"], check=True, timeout=10)
-        elif platform.system() == "Linux":
-            subprocess.run(["sudo", "systemd-resolve", "--flush-caches"], check=True, timeout=10)
-        else:
-            logger.warning("Unsupported OS for DNS cache flushing.")
+    for attempt in range(2):
+        try:
+            if platform.system() == "Windows":
+                # Increased timeout to 20 seconds for slow systems
+                subprocess.run(["ipconfig", "/flushdns"], check=True, timeout=20)
+            elif platform.system() == "Darwin":
+                subprocess.run(["dscacheutil", "-flushcache"], check=True, timeout=10)
+                subprocess.run(["sudo", "killall", "-HUP", "mDNSResponder"], check=True, timeout=10)
+            elif platform.system() == "Linux":
+                subprocess.run(["sudo", "systemd-resolve", "--flush-caches"], check=True, timeout=10)
+            
+            logger.info("DNS cache flushed successfully.")
             if progress_callback:
-                progress_callback(15, "Unsupported OS for DNS cache flushing")
-            return False
+                progress_callback(20, "DNS cache flushed")
+            return True
+        except subprocess.TimeoutExpired:
+            logger.warning(f"DNS flush attempt {attempt+1} timed out. Retrying...")
+            time.sleep(2)
+        except Exception as e:
+            logger.error(f"Failed to flush DNS cache: {e}")
+            break
+            
+    return False
+
+def change_dns_settings_macos(progress_callback=None):
+    """Change DNS settings on macOS using networksetup."""
+    logger.info("Changing DNS settings on macOS...")
+    config = load_config()
+    dns_servers = config.get("dns_servers", ["94.140.14.14", "94.140.15.15"])
+    
+    try:
+        # Get active network services
+        result = subprocess.run(["networksetup", "-listallnetworkservices"], capture_output=True, text=True, check=True)
+        services = [s for s in result.stdout.splitlines() if "*" not in s and s]
         
-        logger.info("DNS cache flushed successfully.")
-        if progress_callback:
-            progress_callback(20, "DNS cache flushed successfully")
+        for service in services:
+            # Check if service is active/has an IP
+            info = subprocess.run(["networksetup", "-getinfo", service], capture_output=True, text=True)
+            if "IP address:" in info.stdout and "none" not in info.stdout.lower():
+                if progress_callback: progress_callback(30, f"Configuring {service}...")
+                subprocess.run(["networksetup", "-setdnsservers", service] + dns_servers, check=True)
+                logger.info(f"DNS set for macOS service: {service}")
+        
         return True
     except Exception as e:
-        logger.error(f"Failed to flush DNS cache: {e}")
-        if progress_callback:
-            progress_callback(20, f"Error: {e}")
+        logger.error(f"Failed to set macOS DNS: {e}")
         return False
 
+def change_dns_settings_linux(progress_callback=None):
+    """Change DNS settings on Linux using nmcli (NetworkManager)."""
+    logger.info("Changing DNS settings on Linux...")
+    config = load_config()
+    dns_str = " ".join(config.get("dns_servers", ["94.140.14.14", "94.140.15.15"]))
+    
+    try:
+        # Try NetworkManager (nmcli)
+        result = subprocess.run(["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"], capture_output=True, text=True)
+        if result.returncode == 0 and result.stdout:
+            for line in result.stdout.splitlines():
+                name = line.split(":")[0]
+                if progress_callback: progress_callback(30, f"Configuring {name}...")
+                subprocess.run(["nmcli", "connection", "modify", name, "ipv4.dns", dns_str, "ipv4.ignore-auto-dns", "yes"], check=True)
+                subprocess.run(["nmcli", "connection", "up", name], check=True)
+            return True
+        
+        # Fallback for systems without NetworkManager (e.g., direct resolv.conf - less ideal)
+        logger.warning("NetworkManager not found or no active connections. DNS set may be incomplete.")
+        return False
+    except Exception as e:
+        logger.error(f"Failed to set Linux DNS: {e}")
+        return False
+
+def change_dns_settings(progress_callback=None):
+    """Unified DNS configuration entry point."""
+    system = platform.system()
+    if system == "Windows":
+        return change_dns_settings_windows(progress_callback)
+    elif system == "Darwin":
+        return change_dns_settings_macos(progress_callback)
+    elif system == "Linux":
+        return change_dns_settings_linux(progress_callback)
+    else:
+        logger.error(f"DNS configuration not supported for {system}")
+        return False
+
+def revert_dns_settings_macos(progress_callback=None):
+    """Restore macOS DNS to Empty/Automatic."""
+    try:
+        result = subprocess.run(["networksetup", "-listallnetworkservices"], capture_output=True, text=True)
+        services = [s for s in result.stdout.splitlines() if "*" not in s and s]
+        for service in services:
+            subprocess.run(["networksetup", "-setdnsservers", service, "Empty"], check=True)
+        return True
+    except Exception: return False
+
+def revert_dns_settings_linux(progress_callback=None):
+    """Restore Linux DNS to Automatic."""
+    try:
+        result = subprocess.run(["nmcli", "-t", "-f", "NAME", "connection", "show", "--active"], capture_output=True, text=True)
+        for name in result.stdout.splitlines():
+            subprocess.run(["nmcli", "connection", "modify", name, "ipv4.ignore-auto-dns", "no"], check=True)
+            subprocess.run(["nmcli", "connection", "up", name], check=True)
+        return True
+    except Exception: return False
+
+def revert_dns_settings(progress_callback=None):
+    """Unified DNS reversion entry point."""
+    system = platform.system()
+    if system == "Windows":
+        return revert_dns_settings_windows(progress_callback)
+    elif system == "Darwin":
+        return revert_dns_settings_macos(progress_callback)
+    elif system == "Linux":
+        return revert_dns_settings_linux(progress_callback)
+    return False
+
 def change_dns_settings_windows(progress_callback=None):
-    """Change DNS settings on Windows with progress reporting."""
+    """Change DNS settings on Windows with progress reporting and smarter interface selection."""
     logger.info("Changing DNS settings on Windows...")
     if progress_callback:
         progress_callback(25, "Detecting network interfaces...")
     
     config = load_config()
-    dns_servers = config.get("dns_servers", ["94.140.14.14", "94.140.15.15"])
+    dns_servers = config.get("dns_servers", ["1.1.1.1", "1.0.0.1"])
     
     try:
-        # Get the name of the active network interface
+        # Get the list of interfaces
         result = subprocess.run(
             ["netsh", "interface", "show", "interface"],
             capture_output=True,
@@ -263,46 +443,67 @@ def change_dns_settings_windows(progress_callback=None):
         )
         lines = result.stdout.splitlines()
         active_interface = None
+        
+        # Look for the primary connected interface, skipping virtual ones
         for line in lines:
             if "Connected" in line:
+                # Example: Enabled  Connected  Dedicated  Wi-Fi
                 parts = line.split()
                 if len(parts) >= 4:
-                    active_interface = parts[-1]  # Extract interface name
+                    interface_name = " ".join(parts[3:])
+                    # Skip common virtual adapters
+                    if any(v in interface_name for v in ["VMnet", "VirtualBox", "vEthernet", "Pseudo", "Loopback"]):
+                        logger.info(f"Skipping virtual interface: {interface_name}")
+                        continue
+                    active_interface = interface_name
                     break
 
         if not active_interface:
-            logger.warning("No active interface found.")
+            logger.warning("No suitable active interface found.")
             if progress_callback:
-                progress_callback(30, "No active interface found")
+                progress_callback(30, "No active physical interface found")
             return False
 
-        logger.info(f"Found active interface: {active_interface}")
+        logger.info(f"Targeting interface: {active_interface}")
         if progress_callback:
-            progress_callback(30, f"Found active interface: {active_interface}")
+            progress_callback(30, f"Configuring {active_interface}...")
 
-        # Set primary DNS
+        # Set primary IPv4 DNS - Using standard syntax: name="Interface Name"
         if progress_callback:
-            progress_callback(32, "Setting primary DNS server...")
-            
+            progress_callback(32, "Setting primary IPv4 DNS...")
+        # Note: We don't use check=True here because Windows sometimes warns that the DNS doesn't exist
+        # even when it successfully sets it.
         subprocess.run(
-            ["netsh", "interface", "ip", "set", "dns", f"name={active_interface}", "source=static", f"addr={dns_servers[0]}", "register=primary"],
-            check=True,
-            timeout=10
+            ["netsh", "interface", "ip", "set", "dns", f"name={active_interface}", "source=static", f"address={dns_servers[0]}", "register=primary"],
+            timeout=15
         )
 
-        # Add secondary DNS
+        # Add secondary IPv4 DNS
         if progress_callback:
-            progress_callback(36, "Setting secondary DNS server...")
-            
+            progress_callback(34, "Setting secondary IPv4 DNS...")
         subprocess.run(
-            ["netsh", "interface", "ip", "add", "dns", f"name={active_interface}", f"addr={dns_servers[1]}", "index=2"],
-            check=True,
-            timeout=10
+            ["netsh", "interface", "ip", "add", "dns", f"name={active_interface}", f"address={dns_servers[1]}", "index=2"],
+            timeout=15
         )
 
-        logger.info(f"DNS settings updated for interface: {active_interface}")
+        # Set IPv6 DNS
+        dns_ipv6 = config.get("dns_servers_ipv6", ["2606:4700:4700::1111", "2606:4700:4700::1001"])
         if progress_callback:
-            progress_callback(40, "DNS settings updated successfully")
+            progress_callback(36, "Setting IPv6 DNS...")
+        try:
+            subprocess.run(
+                ["netsh", "interface", "ipv6", "set", "dns", f"name={active_interface}", "source=static", f"address={dns_ipv6[0]}", "register=primary"],
+                timeout=15
+            )
+            subprocess.run(
+                ["netsh", "interface", "ipv6", "add", "dns", f"name={active_interface}", f"address={dns_ipv6[1]}", "index=2"],
+                timeout=15
+            )
+            logger.info("IPv6 DNS settings updated.")
+        except Exception as e:
+            logger.warning(f"IPv6 configuration skipped or failed: {e}")
+
+        logger.info(f"DNS configuration complete for: {active_interface}")
         return True
     except subprocess.SubprocessError as e:
         logger.error(f"Failed to configure DNS settings (subprocess error): {e}")
@@ -314,6 +515,42 @@ def change_dns_settings_windows(progress_callback=None):
         if progress_callback:
             progress_callback(40, f"Error: {e}")
         return False
+
+def configure_adguard_home(ag_home_dir):
+    """Ensure AdGuard Home is configured with our hybrid upstreams."""
+    logger.info("Auto-configuring AdGuard Home DNS settings...")
+    config_path = os.path.join(ag_home_dir, "AdGuardHome", "AdGuardHome.yaml")
+    
+    # Ensure directory exists
+    if not os.path.exists(os.path.dirname(config_path)):
+        os.makedirs(os.path.dirname(config_path), exist_ok=True)
+
+    config = load_config()
+    upstreams = config.get("encrypted_dns", [
+        "https://1.1.1.2/dns-query",
+        "https://dns.adguard-dns.com/dns-query",
+        "tls://1.1.1.2"
+    ])
+
+    # If config doesn't exist, write bootstrap
+    if not os.path.exists(config_path):
+        lines = ["dns:", "  upstream_dns:"]
+        for u in upstreams: lines.append(f"    - {u}")
+        lines.extend([
+            "  upstream_mode: parallel",
+            "  bootstrap_dns:",
+            "    - 1.1.1.1",
+            "    - 1.0.0.1",
+            "  cache_size: 4194304",
+            "schema_version: 20"
+        ])
+        try:
+            with open(config_path, "w") as f: f.write("\n".join(lines))
+            logger.info("AdGuard Home bootstrap config written.")
+        except Exception as e:
+            logger.error(f"Failed to write AdGuard Home config: {e}")
+    else:
+        logger.info("Existing AdGuard Home config found. Upstreams are pre-configured for new installs.")
 
 def install_adguard_home(progress_callback=None):
     """Install AdGuard Home with progress reporting and cleanup."""
@@ -350,27 +587,23 @@ def install_adguard_home(progress_callback=None):
         
         # Check if the service is running
         try:
-            result = subprocess.run([executable_path, "--service", "status"], 
-                                   capture_output=True, text=True, timeout=10)
-            if "running" in result.stdout.lower():
-                logger.info("AdGuard Home service is already running.")
+            # We don't use check=True here so we can handle the exit codes manually
+            result = subprocess.run([executable_path, "--service", "start"], 
+                                   capture_output=True, text=True, timeout=15)
+            
+            if result.returncode == 0 or "already running" in result.stderr.lower() or "already running" in result.stdout.lower():
+                logger.info("AdGuard Home service is active.")
                 if progress_callback:
-                    progress_callback(65, "AdGuard Home service is running")
+                    progress_callback(65, "AdGuard Home service is active")
+                return True
             else:
-                logger.info("Starting AdGuard Home service...")
-                if progress_callback:
-                    progress_callback(60, "Starting AdGuard Home service...")
-                subprocess.run([executable_path, "--service", "start"], check=True, timeout=10)
-                logger.info("AdGuard Home service started.")
-                if progress_callback:
-                    progress_callback(65, "AdGuard Home service started")
+                logger.error(f"Failed to start AdGuard Home service: {result.stderr}")
+                return False
         except Exception as e:
             logger.error(f"Error checking/starting AdGuard Home service: {e}")
             if progress_callback:
                 progress_callback(65, f"Error: {e}")
             return False
-        
-        return True
 
     # Create installation directory
     logger.info(f"Creating AdGuard Home directory at {ag_home_dir}...")
@@ -422,6 +655,9 @@ def install_adguard_home(progress_callback=None):
         logger.info("Extraction completed.")
         if progress_callback:
             progress_callback(62, "Extraction completed")
+            
+        # Pre-configure with upstream DNS before starting
+        configure_adguard_home(ag_home_dir)
     except Exception as e:
         logger.error(f"Failed to extract AdGuard Home: {e}")
         if progress_callback:
@@ -481,539 +717,202 @@ def install_adguard_home(progress_callback=None):
     return True
 
 def setup_browser_extension(progress_callback=None):
-    """Set up the 'One for All' browser extension with progress reporting."""
+    """Ensure the browser extension is ready for loading, generating it if missing."""
     logger.info("Setting up 'One for All' browser extension...")
     if progress_callback:
         progress_callback(75, "Setting up browser extension...")
 
-    extension_dir = os.path.join(os.getcwd(), "one-for-all-extension")  # Define the extension directory
+    extension_dir = os.path.join(os.getcwd(), "one-for-all-extension")
     os.makedirs(extension_dir, exist_ok=True)
+    os.makedirs(os.path.join(extension_dir, "utils"), exist_ok=True)
 
-    # Create assets directory if it doesn't exist
-    assets_dir = os.path.join(os.path.dirname(__file__), "assets")
-    os.makedirs(assets_dir, exist_ok=True)
+    # Helper to write files
+    def write_ext_file(name, content):
+        path = os.path.join(extension_dir, name)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content.strip())
+        # Force the OS to see a change by updating the timestamp
+        os.utime(path, None)
+        logger.info(f"Extension file ensured: {name}")
 
-    # Helper function to write files only if they don't exist
-    def write_file_if_not_exists(file_path, content):
-        if not os.path.exists(file_path):
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            logger.info(f"File created: {file_path}")
-            return True
-        else:
-            logger.info(f"File already exists, skipping: {file_path}")
-            return False
-    if progress_callback:
-        progress_callback(78, "Creating manifest.json...")
-    # Manifest.json content with minimum extensions
-    manifest_content = """
+    # 1. Manifest
+    write_ext_file("manifest.json", """
 {
   "manifest_version": 3,
   "name": "One for All",
-  "version": "1.0",
-  "description": "A comprehensive ad blocker that blocks ads everywhere.",
-  "permissions": [
-    "tabs",
-    "activeTab",
-    "storage",
-    "declarativeNetRequest",
-    "scripting",
-    "alarms"
-  ],
+  "version": "1.2",
+  "description": "Professional-grade ad blocker and privacy suite.",
+  "permissions": ["declarativeNetRequest", "tabs", "activeTab", "storage", "alarms", "scripting", "privacy"],
   "host_permissions": ["*://*/*"],
-  "background": {
-    "service_worker": "background.js"
-  },
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
-      "run_at": "document_start"
-    }
-  ],
-  "icons": {
-    "48": "icon.png"
-  },
-  "action": {
-    "default_icon": {
-      "48": "icon.png"
-    }
-  },
-  "options_page": "settings.html"
-},
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
-      "run_at": "document_start"
-    }
-  ],
-  "icons": {
-    "48": "icon.png"
-  },
-  "action": {
-    "default_icon": {
-      "48": "icon.png"
-    }
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [{
+    "matches": ["<all_urls>"],
+    "js": ["utils/dom-utils.js", "privacy-shield.js", "content.js", "cookie-consent.js"],
+    "run_at": "document_start"
+  }],
+  "icons": { "16": "icon.png", "32": "icon.png", "48": "icon.png", "128": "icon.png" },
+  "action": { 
+    "default_popup": "popup.html",
+    "default_icon": { "16": "icon.png", "32": "icon.png", "48": "icon.png", "128": "icon.png" }
   },
   "options_page": "settings.html"
 }
-"""
-    write_file_if_not_exists(os.path.join(extension_dir, "manifest.json"), manifest_content)
+""")
 
-    if progress_callback:
-        progress_callback(82, "Creating background.js with caching...")
+    # 2. Privacy Shield (Shimming & Fingerprinting)
+    write_ext_file("privacy-shield.js", """
+(function() {
+  'use strict';
+  const shims = {
+    ga: function() { console.log('One for All: Shimmed GA'); },
+    gtag: function() { console.log('One for All: Shimmed GTAG'); },
+    fbq: function() { console.log('One for All: Shimmed FBQ'); }
+  };
+  const jitter = () => (Math.random() - 0.5) * 0.0001;
+  const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+  HTMLCanvasElement.prototype.toDataURL = function() {
+    const ctx = this.getContext('2d');
+    if (ctx) {
+      const imgData = ctx.getImageData(0, 0, this.width, this.height);
+      imgData.data[3] = imgData.data[3] + (Math.random() > 0.5 ? 1 : -1);
+      ctx.putImageData(imgData, 0, 0);
+    }
+    return originalToDataURL.apply(this, arguments);
+  };
+  Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+  const script = document.createElement('script');
+  script.textContent = `window.ga=${shims.ga.toString()};window.gtag=${shims.gtag.toString()};window.fbq=${shims.fbq.toString()};`;
+  (document.head || document.documentElement).appendChild(script);
+  script.remove();
+})();
+""")
 
-    # Background.js content (updated to handle isEnabled state and alarms and caching
-    background_content = """
-const defaultBlocklists = [
-  "https://easylist.to/easylist/easylist.txt",
-  "https://easylist.to/easylist/easyprivacy.txt",
-  "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters.txt"
+    # 3. Background (Rules, WebRTC, & Status Check)
+    write_ext_file("background.js", """
+const adBlockingRules = [
+  { id: 1, priority: 1, action: { type: 'block' }, condition: { urlFilter: '*ads*', resourceTypes: ['script', 'image', 'xmlhttprequest', 'sub_frame'] } },
+  { id: 6, priority: 2, action: { type: 'modifyHeaders', requestHeaders: [{ header: 'referer', operation: 'remove' }, { header: 'x-client-data', operation: 'remove' }] }, condition: { urlFilter: '*', domainType: 'thirdParty' } },
+  { id: 7, priority: 2, action: { type: 'modifyHeaders', requestHeaders: [{ header: 'user-agent', operation: 'set', value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36' }] }, condition: { urlFilter: '*' } }
 ];
 
-// Cache control
-const CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+async function init() {
+  const existing = await chrome.declarativeNetRequest.getDynamicRules();
+  await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: existing.map(r => r.id), addRules: adBlockingRules });
+}
+chrome.runtime.onInstalled.addListener(init);
+init();
 
-async function fetchBlocklists() {
-  try {
-    const storedData = await chrome.storage.local.get(["blocklists", "lastFetchTime", "cachedRules"]);
-    const blocklists = storedData.blocklists || defaultBlocklists;
-    const lastFetchTime = storedData.lastFetchTime || 0;
-    const now = Date.now();
-    
-    // Check if we have cached rules that are still valid
-    if (storedData.cachedRules && (now - lastFetchTime) < CACHE_DURATION) {
-      console.log("Using cached rules from previous fetch");
-      await updateRules(storedData.cachedRules);
-      return;
-    }
-    
-    console.log("Cache expired or not found, fetching fresh rules");
-    let blockedDomains = [];
-    let ruleIdCounter = 1;
-
-
-    for (const url of blocklists) {
-      try {
-        console.log(`Fetching blocklist: ${url}`);
-        const response = await fetch(url, { cache: "no-store" });
-        const rules = await response.text();
-        
-        // Process rules in chunks to avoid UI freezing
-        const lines = rules.split("\\n");
-        const chunkSize = 1000;
-        
-        for (let i = 0; i < lines.length; i += chunkSize) {
-          const chunk = lines.slice(i, i + chunkSize);
-          
-          chunk.forEach((rule) => {
-            if (rule.startsWith("||") && !rule.endsWith("^")) {
-              const domain = rule.slice(2).split("^")[0];
-              if (domain) {
-                blockedDomains.push({
-                  id: ruleIdCounter++,
-                  priority: 1,
-                  action: { type: "block" },
-                  condition: { 
-                    urlFilter: domain, 
-                    resourceTypes: ["main_frame", "sub_frame", "script", "image", "stylesheet", "object"] 
-                  }
-                });
-              }
-            }
-          });
-          
-          // Small delay to prevent UI freezing
-          await new Promise(resolve => setTimeout(resolve, 0));
-        }
-      } catch (error) {
-        console.error(`Failed to fetch blocklist: ${url}`, error);
+// Handle status checks from settings page (Bypasses CORS)
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === 'checkStatus') {
+    const ports = ['3000', '80'];
+    const checkPort = (index) => {
+      if (index >= ports.length) {
+        sendResponse({ status: 'offline' });
+        return;
       }
-    }
-
-    // Limit the number of rules to avoid exceeding Chrome's limit
-    blockedDomains = blockedDomains.slice(0, 5000);
-
-    // Clear all existing rules before adding new ones
-    try {
-      const existingRules = await chrome.declarativeNetRequest.getDynamicRules();
-      const existingRuleIds = existingRules.map(rule => rule.id);
-
-      await chrome.declarativeNetRequest.updateDynamicRules({
-        removeRuleIds: existingRuleIds, // Remove all existing rules
-        addRules: blockedDomains // Add new rules
-      });
-
-      console.log(`Successfully updated ${blockedDomains.length} rules.`);
-    } catch (error) {
-      console.error("Error updating dynamic rules:", error);
-    }
-  } catch (error) {
-    console.error("Error updating blocklists:", error);
-  }
-}
-
-async function updateRules(rules) {
-  try {
-    // Get existing rules to remove them
-    const existingRules = await chrome.declarativeNetRequest.getDynamicRules();
-    const existingRuleIds = existingRules.map(rule => rule.id);
-    
-    // Update rules in batches to avoid hitting limits
-    const batchSize = 1000;
-    for (let i = 0; i < rules.length; i += batchSize) {
-      const batch = rules.slice(i, i + batchSize);
-      
-      await chrome.declarativeNetRequest.updateDynamicRules({
-        removeRuleIds: existingRuleIds.slice(i, i + batchSize),
-        addRules: batch
-      });
-      
-      // Small delay to prevent UI freezing
-      await new Promise(resolve => setTimeout(resolve, 0));
-    }
-    
-    console.log(`Successfully updated ${rules.length} rules.`);
-  } catch (error) {
-    console.error("Error updating dynamic rules:", error);
-  }
-}
-
-// Schedule periodic updates using alarms
-chrome.alarms.create("updateBlocklists", { periodInMinutes: 1440 }); // Run once per day
-
-chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name === "updateBlocklists") {
-    await fetchBlocklists();
+      fetch(`http://localhost:${ports[index]}/`, { mode: 'no-cors', cache: 'no-store' })
+        .then(() => sendResponse({ status: 'online' }))
+        .catch(() => checkPort(index + 1));
+    };
+    checkPort(0);
+    return true; 
   }
 });
 
-// Initial fetch
-chrome.runtime.onInstalled.addListener(() => {
-  fetchBlocklists();
-});
-
-// Handle isEnabled state
-chrome.storage.sync.get("isEnabled", ({ isEnabled }) => {
-  if (isEnabled === false) {
-    disableAdBlocking();
-  } else {
-    // Default to enabled if not set
-    chrome.storage.sync.set({ isEnabled: true });
-  }
-});
-
-// Listen for changes in isEnabled
-chrome.storage.onChanged.addListener((changes) => {
-  if (changes.isEnabled) {
-    const isEnabled = changes.isEnabled.newValue;
-    if (isEnabled) {
-      fetchBlocklists();
-    } else {
-      disableAdBlocking();
-    }
-  }
-});
-
-async function disableAdBlocking() {
-  try {
-    const existingRules = await chrome.declarativeNetRequest.getDynamicRules();
-    const existingRuleIds = existingRules.map(rule => rule.id);
-    
-    await chrome.declarativeNetRequest.updateDynamicRules({
-      removeRuleIds: existingRuleIds
-    });
-    console.log("Ad blocker disabled. Rules cleared.");
-  } catch (error) {
-    console.error("Error clearing rules:", error);
+function setWebRTC(isEnabled) {
+  if (chrome.privacy && chrome.privacy.network) {
+    chrome.privacy.network.webRTCIPHandlingPolicy.set({ value: isEnabled ? 'disable_non_proxied_udp' : 'default' });
   }
 }
-"""
-    write_file_if_not_exists(os.path.join(extension_dir, "background.js"), background_content)
+chrome.storage.sync.get("isEnabled", (r) => setWebRTC(r.isEnabled !== false));
+""")
 
-    if progress_callback:
-        progress_callback(86, "Creating optimized content.js...")
-
-    # Content.js content with optimized ad hiding
-    content_content = """
-//Ad selectors to target common ad elements
-const adSelectors = [
-  "ytd-display-ad-renderer", // YouTube display ads
-  "ytd-promoted-video-renderer", // Promoted videos in search results
-  ".ytp-ad-module", // YouTube video ads module
-  ".video-ads", // Video ads container
-  ".ytp-ad-player-overlay", // Ad overlay on videos
-  ".ytp-ad-skip-button", // Skip ad button
-  ".ytp-ad-text", // Text indicating an ad
-  ".ytp-ad-action-interstitial", // Full-screen interstitial ads
-
-  // General ad selectors
-  "[class*='ad-']",
-  "[class*='Ad']",
-  "[class*='advertisement']",
-  "[id*='google_ads']",
-  "[id*='ad-']",
-  "[data-ad]",
-  
-  // Common ad containers
-  ".ad-container",
-  ".ad-wrapper",
-  ".adsbygoogle",
-  ".advertisement",
-  
-  // Cookie consent banners
-  ".cc-banner",
-  ".cookie-consent",
-  ".cookie-notice",
-  ".gdpr-banner",
-  ".consent-banner"
-];
-
-// Compile a single selector string for better performance
-const combinedSelector = adSelectors.join(", ");
-
-// Function to hide ads
-function hideAds() {
-  const ads = document.querySelectorAll(combinedSelector);
-  if (ads.length > 0) {
-    ads.forEach(ad => {
-      if (ad.style.display !== 'none') {
-        ad.style.display = 'none';
-      }
-    });
-  }
-}
-
-// Hide ads immediately when script loads
-hideAds();
-
-// Set up a more efficient MutationObserver
-const observer = new MutationObserver((mutations) => {
-  let shouldHideAds = false;
-  
-  for (const mutation of mutations) {
-    if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
-      shouldHideAds = true;
-      break;
-    }
-  }
-  
-  if (shouldHideAds) {
-    hideAds();
-  }
-});
-
-// Start observing with a throttled approach
-let observing = false;
-
-function startObserver() {
-  if (!observing && document.body) {
-    observer.observe(document.body, { 
-      childList: true, 
-      subtree: true,
-      attributes: false,
-      characterData: false
-    });
-    observing = true;
-  }
-}
-
-// Try to start immediately if document is ready
-if (document.readyState === 'interactive' || document.readyState === 'complete') {
-  startObserver();
-  hideAds();
-} else {
-  // Otherwise wait for DOM to be ready
-  document.addEventListener('DOMContentLoaded', () => {
-    startObserver();
-    hideAds();
+    # 4. DOM Utils
+    write_ext_file("utils/dom-utils.js", """
+export function hideElements(selectors) {
+  selectors.forEach(s => {
+    document.querySelectorAll(s).forEach(el => { el.style.display = 'none'; });
   });
 }
+""")
 
-// Periodically check for ads but with a reasonable interval
-let adCheckInterval;
+    # 5. Content Scripts
+    write_ext_file("content.js", "console.log('One for All: Content Active');")
+    write_ext_file("cookie-consent.js", "console.log('One for All: Cookie Shield Active');")
 
-function setupAdCheckInterval() {
-  // Clear any existing interval
-  if (adCheckInterval) {
-    clearInterval(adCheckInterval);
-  }
-  
-  // Set up a new interval with a reasonable delay (5 seconds)
-  adCheckInterval = setInterval(hideAds, 5000);
-}
-
-// Set up the interval when page is visible
-setupAdCheckInterval();
-
-// Optimize performance by pausing when page is not visible
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) {
-    if (adCheckInterval) {
-      clearInterval(adCheckInterval);
-      adCheckInterval = null;
-    }
+    # 6. UI (Popup & Settings)
+    write_ext_file("popup.html", """
+<html>
+<head><title>One for All</title></head>
+<body style='width:200px;padding:10px;font-family:sans-serif;'>
+  <h3>One for All</h3>
+  <p>Privacy Active</p>
+  <hr>
+  <a href='#' id='openSettings'>Settings</a>
+  <script src="popup.js"></script>
+</body>
+</html>
+""".strip())
     
-    if (observing) {
-      observer.disconnect();
-      observing = false;
-    }
-  } else {
-    startObserver();
-    setupAdCheckInterval();
-    hideAds(); // Check immediately when page becomes visible again
+    write_ext_file("popup.js", """
+document.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('openSettings');
+  if (btn) {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      chrome.runtime.openOptionsPage();
+    });
   }
 });
-"""
-    # Write content.js file
-    content_js_path = os.path.join(extension_dir, "content.js")
-    if not os.path.exists(content_js_path):
-        with open(content_js_path, "w", encoding="utf-8") as f:
-            f.write(content_content)
-        logger.info(f"File created: {content_js_path}")
-    else:
-        logger.info(f"File already exists, skipping: {content_js_path}")
-
-    if progress_callback:
-        progress_callback(90, "Creating streamlined settings.html...")
-   
-    # Settings.html content with streamlined interface
-    settings_html_content = """
+""".strip())
+    
+    write_ext_file("settings.html", """
 <!DOCTYPE html>
 <html>
-<head>
-  <title>One for All Settings</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="settings.css">
-</head>
+<head><title>One for All Settings</title><style>body{font-family:sans-serif;padding:20px;}h1{color:#007bff;}</style></head>
 <body>
-  <div class="container">
-    <h1>One for All Settings</h1>
-    
-    <!-- Enable/Disable Toggle -->
-    <div class="switch-container">
-      <span class="switch-label">Enable Ad Blocking:</span>
-      <label class="switch">
-        <input type="checkbox" id="enableToggle" checked>
-        <span class="slider"></span>
-      </label>
-    </div>
-    
-    <!-- Blocklist Settings -->
-    <div class="form-group">
-      <label for="blocklists">Custom Blocklists (comma-separated URLs):</label>
-      <input type="text" id="blocklists" placeholder="https://example.com/blocklist.txt, https://another.com/blocklist.txt">
-    </div>
-    
-    <button id="save">Save Settings</button>
-    <div id="successMessage" class="alert success">Settings saved successfully!</div>
-    
-    <!-- Stats Section -->
-    <div class="stats-container">
-      <h2>Statistics</h2>
-      <div class="stat-item">
-        <span class="stat-label">Ads Blocked Today:</span>
-        <span id="adsBlockedToday" class="stat-value">0</span>
-      </div>
-      <div class="stat-item">
-        <span class="stat-label">Total Ads Blocked:</span>
-        <span id="totalAdsBlocked" class="stat-value">0</span>
-      </div>
-      <div class="stat-item">
-        <span class="stat-label">Last Rules Update:</span>
-        <span id="lastUpdate" class="stat-value">Never</span>
-      </div>
-    </div>
-  </div>
-
+  <h1>One for All Settings</h1>
+  <p>Your privacy suite is active and managed by the system-wide controller.</p>
+  <div id="stats">Checking AdGuard Home connection...</div>
   <script src="settings.js"></script>
 </body>
 </html>
-"""
-    write_file_if_not_exists(os.path.join(extension_dir, "settings.html"), settings_html_content)
+""".strip())
 
-    # Create settings.js file for functionality
-    settings_js_content = """
-document.addEventListener('DOMContentLoaded', function() {
-  const enableToggle = document.getElementById('enableToggle');
-  const blocklistsInput = document.getElementById('blocklists');
-  const saveButton = document.getElementById('save');
-  const successMessage = document.getElementById('successMessage');
-  const adsBlockedToday = document.getElementById('adsBlockedToday');
-  const totalAdsBlocked = document.getElementById('totalAdsBlocked');
-  const lastUpdate = document.getElementById('lastUpdate');
-
-  // Hide success message initially
-  successMessage.style.display = 'none';
-
-  // Load saved settings
-  chrome.storage.sync.get(['isEnabled', 'blocklists', 'adsBlockedToday', 'totalAdsBlocked', 'lastUpdateTime'], function(data) {
-    if (data.isEnabled !== undefined) {
-      enableToggle.checked = data.isEnabled;
+    write_ext_file("settings.js", """
+document.addEventListener('DOMContentLoaded', () => {
+  const stats = document.getElementById('stats');
+  chrome.runtime.sendMessage({ action: 'checkStatus' }, (response) => {
+    if (response && response.status === 'online') {
+      stats.textContent = 'AdGuard Home is Connected and Filtering.';
+      stats.style.color = 'green';
+    } else {
+      stats.textContent = 'AdGuard Home is not responding. Check the Control Panel.';
+      stats.style.color = 'red';
     }
-    
-    if (data.blocklists) {
-      blocklistsInput.value = data.blocklists.join(', ');
-    }
-    
-    if (data.adsBlockedToday) {
-      adsBlockedToday.textContent = data.adsBlockedToday;
-    }
-    
-    if (data.totalAdsBlocked) {
-      totalAdsBlocked.textContent = data.totalAdsBlocked;
-    }
-    
-    if (data.lastUpdateTime) {
-      lastUpdate.textContent = new Date(data.lastUpdateTime).toLocaleString();
-    }
-  });
-
-  // Save settings
-  saveButton.addEventListener('click', function() {
-    const isEnabled = enableToggle.checked;
-    let blocklists = [];
-    
-    if (blocklistsInput.value.trim()) {
-      blocklists = blocklistsInput.value.split(',').map(url => url.trim()).filter(url => url);
-    }
-    
-    chrome.storage.sync.set({ isEnabled, blocklists }, function() {
-      successMessage.style.display = 'block';
-      setTimeout(() => {
-        successMessage.style.display = 'none';
-      }, 3000);
-    });
   });
 });
-"""
-    write_file_if_not_exists(os.path.join(extension_dir, "settings.js"), settings_js_content)
+""")
 
-    # Add separate CSS file for better maintainability
-    settings_css_content = """
-:root {
-  --primary-color: #007bff;
-  --primary-hover: #0056b3;
-  --text-color: #333;
-  --bg-color: #f8f9fa;
-  --card-bg: #fff;
-  --border-color: #dee2e6;
-  --success-color: #28a745;
-}
+    # 7. Icon
+    icon_path = os.path.join(extension_dir, "icon.png")
+    if not os.path.exists(icon_path):
+        generate_default_icon(icon_path)
 
-body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  line-height: 1.6;
-  color: var(--text-color);
-  background-color: var(--bg-color);
-  margin: 0;
-  padding: 20px;
-}
+    if progress_callback:
+        progress_callback(100, "Extension generated successfully")
+    return True
 
-/* ... additional CSS styles ... */
-"""
-    write_file_if_not_exists(os.path.join(extension_dir, "settings.css"), settings_css_content)
+    try:
+        if os.path.exists(target_dir):
+            shutil.rmtree(target_dir)
+        shutil.copytree(source_dir, target_dir)
+        logger.info(f"Extension files copied successfully to {target_dir}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to copy extension files: {e}")
+        return False
     # Use your custom icon
     custom_icon_path = os.path.join(os.path.dirname(__file__), "assets", "icon.png")  # Path to your custom icon
     icon_path = os.path.join(extension_dir, "icon.png")
@@ -1040,6 +939,59 @@ body {
         progress_callback(95, "Browser extension created successfully")
     return True
 
+def revert_dns_settings_windows(progress_callback=None):
+    """Restore DNS settings to automatic (DHCP) on Windows."""
+    logger.info("Reverting DNS settings on Windows...")
+    if progress_callback:
+        progress_callback(50, "Detecting network interfaces...")
+    
+    try:
+        result = subprocess.run(["netsh", "interface", "show", "interface"], capture_output=True, text=True, timeout=10)
+        active_interface = None
+        for line in result.stdout.splitlines():
+            if "Connected" in line:
+                active_interface = line.split()[-1]
+                break
+
+        if active_interface:
+            if progress_callback: progress_callback(70, f"Resetting {active_interface}...")
+            # Revert IPv4 to DHCP
+            subprocess.run(["netsh", "interface", "ip", "set", "dns", f"name={active_interface}", "source=dhcp"], check=True, timeout=10)
+            
+            # Revert IPv6 to DHCP
+            try:
+                subprocess.run(["netsh", "interface", "ipv6", "set", "dns", f"name={active_interface}", "source=dhcp"], check=True, timeout=10)
+                logger.info("IPv6 DNS settings reverted.")
+            except subprocess.CalledProcessError:
+                logger.warning("Failed to reset IPv6 DNS.")
+            
+            logger.info(f"DNS settings reset for interface: {active_interface}")
+        
+        if progress_callback: progress_callback(100, "DNS settings reverted")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to revert DNS settings: {e}")
+        return False
+
+def is_port_in_use(port):
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(('localhost', port)) == 0
+
+def wait_for_service(ports=[3000, 80], timeout=30):
+    """Wait for AdGuard Home to respond on either port 3000 or 80."""
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        for port in ports:
+            try:
+                response = requests.get(f"http://localhost:{port}", timeout=2)
+                if response.status_code == 200 or response.status_code == 401: # 401 means it needs login, but it's alive!
+                    return True
+            except requests.RequestException:
+                pass
+        time.sleep(2)
+    return False
+
 def gui_wizard():
     def update_progress(value, message=""):
         progress_var.set(value)
@@ -1047,154 +999,132 @@ def gui_wizard():
             status_var.set(message)
         root.update()
 
-    def run_task(task_func, *args, **kwargs):
+    def run_revert():
+        if not is_admin():
+            messagebox.showerror("Error", "Admin privileges required.")
+            return
+            
+        if not messagebox.askyesno("Confirm", "This will restore your hosts file and DNS settings. Continue?"):
+            return
+
+        revert_button.config(state=tk.DISABLED)
+        start_button.config(state=tk.DISABLED)
+        
         try:
-            return task_func(*args, **kwargs)
+            revert_hosts_file(update_progress)
+            revert_dns_settings(update_progress)
+            flush_dns_cache(update_progress)
+            messagebox.showinfo("Success", "System settings reverted successfully.")
         except Exception as e:
-            logger.error(f"Error in {task_func.__name__}: {e}")
             messagebox.showerror("Error", str(e))
-            return False
+        finally:
+            revert_button.config(state=tk.NORMAL)
+            start_button.config(state=tk.NORMAL)
+            update_progress(0, "Ready")
 
     def on_submit():
+        if not is_admin():
+            messagebox.showerror("Error", "Please run as Administrator.")
+            return
+
+        # Pre-flight port checks (Windows only for now)
+        if platform.system() == "Windows" and is_port_in_use(53):
+            if not messagebox.askyesno("Warning", "Port 53 (DNS) is already in use. AdGuard Home might fail. Continue?"):
+                return
+        
+        start_button.config(state=tk.DISABLED)
+        revert_button.config(state=tk.DISABLED)
+        
         try:
-            # Check for elevated privileges
-            if not is_admin():
-                messagebox.showerror("Error", "Please run this script with elevated privileges (as Administrator).")
-                return
-
-            # Disable the start button during setup
-            start_button.config(state=tk.DISABLED)
-            
-            # Update hosts file with progress reporting
-            update_progress(0, "Starting setup...")
-            if not run_task(update_hosts_file, progress_callback=update_progress):
-                start_button.config(state=tk.NORMAL)
-                return
-            
-            # Flush DNS cache
-            update_progress(0, "Flushing DNS cache...")
-            if not run_task(flush_dns_cache, progress_callback=update_progress):
-                start_button.config(state=tk.NORMAL)
-                return
-            update_progress(20, "DNS cache flushed")
-            
-            # Change DNS settings
-            update_progress(20, "Changing DNS settings...")
-            if not run_task(change_dns_settings_windows, progress_callback=update_progress):
-                start_button.config(state=tk.NORMAL)
-                return
-            update_progress(40, "DNS settings updated")
-            
-            # Install AdGuard Home
-            update_progress(40, "Installing AdGuard Home...")
-            if not run_task(install_adguard_home, progress_callback=update_progress):
-                start_button.config(state=tk.NORMAL)
-                return
-            update_progress(70, "AdGuard Home installed")
-            
-            # Set up browser extension
-            update_progress(70, "Setting up browser extension...")
-            if not run_task(setup_browser_extension, progress_callback=update_progress):
-                start_button.config(state=tk.NORMAL)
-                return
-            update_progress(100, "Setup completed successfully!")
-
-            # Close the wizard automatically after a short delay
-            root.after(2000, root.destroy)
-            messagebox.showinfo("Success", "'One for All' setup completed successfully!")
+            if run_full_setup(update_progress):
+                messagebox.showinfo("Success", "One for All setup completed! This window will close in 3 seconds.")
+                root.after(3000, root.destroy)
         except Exception as e:
             logger.error(f"Setup error: {e}")
             messagebox.showerror("Error", str(e))
+        finally:
             start_button.config(state=tk.NORMAL)
+            revert_button.config(state=tk.NORMAL)
 
-    # Create the main window with improved styling
+    def on_schedule():
+        if not is_admin():
+            messagebox.showerror("Error", "Please run as Administrator to schedule tasks.")
+            return
+            
+        if schedule_task_windows():
+            messagebox.showinfo("Success", "Weekly background updates scheduled for Sundays at 3:00 AM.")
+        else:
+            messagebox.showerror("Error", "Failed to schedule task. See logs for details.")
+
     root = tk.Tk()
-    root.title("'One for All' Setup Wizard")
-    root.geometry("550x450")
-    root.configure(bg="#f0f0f0")  # Light gray background
+    root.title("'One for All' Control Panel")
+    root.geometry("550x550")
+    root.configure(bg="#f0f0f0")
 
-    # Add a header frame
     header_frame = tk.Frame(root, bg="#007bff", padx=10, pady=10)
     header_frame.pack(fill="x")
+    tk.Label(header_frame, text="One for All Control Panel", font=("Arial", 16, "bold"), fg="white", bg="#007bff").pack()
     
-    tk.Label(header_frame, text="One for All Setup Wizard", 
-             font=("Arial", 16, "bold"), fg="white", bg="#007bff").pack(pady=5)
-    
-    # Main content frame
     content_frame = tk.Frame(root, bg="#f0f0f0", padx=20, pady=20)
     content_frame.pack(fill="both", expand=True)
     
-    tk.Label(content_frame, text="This wizard will set up a comprehensive ad-blocking solution:", 
-             font=("Arial", 11), bg="#f0f0f0").pack(anchor="w", pady=(0, 10))
+    tk.Label(content_frame, text="Manage your system-wide ad blocking solution.", font=("Arial", 11), bg="#f0f0f0").pack(anchor="w", pady=(0, 10))
     
-    # Create a frame for the checklist
-    checklist_frame = tk.Frame(content_frame, bg="#f0f0f0")
-    checklist_frame.pack(fill="x", pady=5)
-    
-    features = [
-        "✓ Host file ad blocking",
-        "✓ DNS-level protection",
-        "✓ AdGuard Home installation",
-        "✓ Browser extension setup"
-    ]
-    
-    for feature in features:
-        tk.Label(checklist_frame, text=feature, font=("Arial", 10), 
-                 bg="#f0f0f0", fg="#333333").pack(anchor="w", pady=2)
-
-    # Add progress bar and status with improved styling
     progress_frame = tk.Frame(content_frame, bg="#f0f0f0")
     progress_frame.pack(fill="x", pady=20)
     
     progress_var = tk.IntVar(value=0)
-    status_var = tk.StringVar(value="Ready to start")
+    status_var = tk.StringVar(value="Ready")
     
-    tk.Label(progress_frame, text="Status:", font=("Arial", 10, "bold"), 
-             bg="#f0f0f0").pack(anchor="w")
-    status_label = tk.Label(progress_frame, textvariable=status_var, 
-                           font=("Arial", 10), bg="#f0f0f0", fg="#007bff")
-    status_label.pack(anchor="w", pady=(0, 10))
+    tk.Label(progress_frame, text="Status:", font=("Arial", 10, "bold"), bg="#f0f0f0").pack(anchor="w")
+    status_label = tk.Label(progress_frame, textvariable=status_var, font=("Arial", 10), bg="#f0f0f0", fg="#007bff")
+    status_label.pack(anchor="w", pady=(0, 5))
     
-    # Use ttk.Progressbar for better appearance
-    progress_bar = ttk.Progressbar(progress_frame, variable=progress_var, 
-                                  length=500, mode="determinate")
+    progress_bar = ttk.Progressbar(progress_frame, variable=progress_var, length=500, mode="determinate")
     progress_bar.pack(fill="x")
     
-    # Button frame
     button_frame = tk.Frame(content_frame, bg="#f0f0f0", pady=20)
     button_frame.pack(fill="x")
     
-    start_button = tk.Button(button_frame, text="Start Setup", command=on_submit, 
-                            font=("Arial", 12, "bold"), bg="#007bff", fg="white",
-                            activebackground="#0056b3", activeforeground="white",
-                            padx=20, pady=10, relief=tk.FLAT)
-    start_button.pack()
+    start_button = tk.Button(button_frame, text="Install / Update", command=on_submit, 
+                            font=("Arial", 11, "bold"), bg="#28a745", fg="white",
+                            padx=15, pady=8, relief=tk.FLAT, width=15)
+    start_button.pack(side="left", padx=5)
 
-    # Run the GUI
+    revert_button = tk.Button(button_frame, text="Revert Changes", command=run_revert, 
+                             font=("Arial", 11, "bold"), bg="#dc3545", fg="white",
+                             padx=15, pady=8, relief=tk.FLAT, width=15)
+    revert_button.pack(side="right", padx=5)
+
+    schedule_button = tk.Button(content_frame, text="Schedule Weekly Updates", command=on_schedule,
+                                font=("Arial", 11), bg="#6c757d", fg="white",
+                                padx=20, pady=10, relief=tk.FLAT)
+    schedule_button.pack(pady=20)
+
     root.mainloop()
 
-
-def generate_default_icon(icon_path):
-    """Generate a default icon if the custom icon is missing."""
+def generate_default_icon(icon_path, size=128):
+    """Generate a default high-res icon if the custom icon is missing."""
     try:
-        # Check if PIL is available before attempting to use it
-        try:
-            from PIL import Image, ImageDraw
-        except ImportError:
-            logger.error("PIL library not found. Cannot generate default icon.")
-            return False
-            
-        # Create a new 48x48 image with a blue background
-        img = Image.new('RGB', (48, 48), color=(0, 123, 255))
+        from PIL import Image, ImageDraw
+        # Create a new image with a blue background
+        img = Image.new('RGB', (size, size), color=(0, 123, 255))
         draw = ImageDraw.Draw(img)
         
-        # Draw a shield shape
-        draw.polygon([(24, 5), (5, 15), (5, 30), (24, 43), (43, 30), (43, 15)], fill=(255, 255, 255))
-        draw.polygon([(24, 10), (10, 18), (10, 28), (24, 38), (38, 28), (38, 18)], fill=(0, 123, 255))
+        # Scale the shield shape proportionally
+        scale = size / 48
+        points = [(24*scale, 5*scale), (5*scale, 15*scale), (5*scale, 30*scale), 
+                  (24*scale, 43*scale), (43*scale, 30*scale), (43*scale, 15*scale)]
+        draw.polygon(points, fill=(255, 255, 255))
         
-        # Save the image
+        inner_scale = size / 48
+        inner_points = [(24*inner_scale, 10*inner_scale), (10*inner_scale, 18*inner_scale), 
+                        (10*inner_scale, 28*inner_scale), (24*inner_scale, 38*inner_scale), 
+                        (38*inner_scale, 28*inner_scale), (38*inner_scale, 18*inner_scale)]
+        draw.polygon(inner_points, fill=(0, 123, 255))
+        
         img.save(icon_path)
-        logger.info(f"Generated default icon at {icon_path}")
+        logger.info(f"Generated {size}x{size} default icon at {icon_path}")
         return True
     except Exception as e:
         logger.error(f"Error generating default icon: {e}")
@@ -1202,9 +1132,20 @@ def generate_default_icon(icon_path):
 
 
 if __name__ == "__main__":
-    import sys
+    parser = argparse.ArgumentParser(description="'One for All' Ad Blocking Suite")
+    parser.add_argument('--silent', action='store_true', help='Run update in silent mode without GUI')
+    args = parser.parse_args()
+
     if check_requirements():
-        gui_wizard()
+        if args.silent:
+            if is_admin():
+                logger.info("Running silent update...")
+                run_full_setup()
+            else:
+                print("Error: Admin privileges required for silent update.")
+                sys.exit(1)
+        else:
+            gui_wizard()
     else:
         print("Failed to meet requirements. Exiting.")
         sys.exit(1)

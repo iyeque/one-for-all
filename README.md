@@ -1,76 +1,62 @@
-# One for All
+# One for All: Vertical Integration Ad-Blocking & Privacy Suite
 
-A comprehensive ad-blocking solution that combines network-wide blocking with a custom browser extension to block ads everywhere.
+"One for All" is a professional-grade, multi-layered privacy solution that synchronizes protection across your System, Network, and Browser. 
 
-![AdGuard Home](https://adguard.com/images/logo.png)
+## 🛡️ The "Vertical" Advantage
 
-## Overview
+Unlike standard blockers that only operate in the browser, "One for All" provides a three-tiered defense:
 
-"One for All" is an all-in-one ad-blocking tool designed to provide maximum protection against ads, trackers, and malicious domains. It integrates seamlessly with [AdGuard Home](https://github.com/AdguardTeam/AdGuardHome) to block ads at the DNS level while adding additional layers of protection through system-level and browser-level blocking.
+### 1. Network & System Engine (Python)
+*   **Hybrid DNS Mode:** Blends **Cloudflare Security** (speed + malware protection) with **AdGuard Privacy** (surgical filtering).
+*   **Parallel Queries:** Resolves DNS requests using multiple encrypted providers simultaneously, choosing the fastest response.
+*   **Hardened Hosts:** A system-level "kill switch" for ad-serving domains with safe `# BEGIN/END` markers for clean management.
+*   **Universal Support:** Native DNS configuration for **Windows, macOS, and Linux**.
+*   **Automated Updates:** A "Set and Forget" scheduler that keeps your ad-blocking lists fresh in the background.
+*   **Self-Healing Setup:** Automatically repairs or regenerates extension components if they are missing.
+*   **Smart Connectivity:** Auto-detection of AdGuard Home on multiple ports (80/3000) for zero-config monitoring.
 
-## Features
+### 2. The "Smart" Browser Extension (MV3)
+*   **Script Shimming:** Injects dummy objects for Google Analytics and Facebook Pixel. Sites stay stable and functional while tracking is neutralized.
+*   **Digital Trail Camouflage:** 
+    *   **User-Agent Spoofing:** Reports a generic Windows/Chrome profile to blend in.
+    *   **Referer Stripping:** Removes the "where did you come from" header on third-party requests.
+    *   **X-Client-Data Removal:** Blocks Google's unique Chrome tracking header.
+*   **Fingerprint Randomization:** 
+    *   **Canvas/Audio Jitter:** Adds invisible noise to renderings to make your hardware fingerprint "unstable" and untrackable.
+    *   **Hardware Spoofing:** Reports a standardized 8-core CPU and 8GB RAM profile.
+*   **WebRTC Leak Protection:** Stops your real IP from leaking through VPNs.
 
-- **Network-Wide Blocking**: Installs and configures AdGuard Home as a service to block ads at the DNS level.
-- **Hosts File Updates**: Automatically updates the system's `hosts` file with ad-serving domains for additional blocking.
-- **DNS Configuration**: Configures DNS settings to use AdGuard DNS for enhanced privacy and ad blocking.
-- **Custom Browser Extension**: Includes a lightweight browser extension to block ads directly in the browser.
-- **User-Friendly Setup**: Provides a GUI wizard to simplify the installation and configuration process.
+### 3. User Control
+*   **Intelligent Whitelisting:** A "Compatibility Mode" toggle that dynamically syncs network rules to allow specific sites while maintaining background protection.
+*   **High-DPI Visuals:** Sharp, high-resolution icons for 4K and Retina displays.
 
-## Table of Contents
+---
 
-- [Installation](#installation)
-- [Usage](#usage)
-- [Third-Party Software](#third-party-software)
-- [Contributing](#contributing)
-- [License](#license)
+## 🚀 Setup & Launch
 
-## Installation
+### 1. System Setup
+Run the master installer with Administrator/Root privileges:
+```bash
+python one_for_all.py
+```
+*   Click **"Install / Update"**. This will configure your DNS, update hosts, and bootstrap AdGuard Home.
 
-### Prerequisites
+### 2. Browser Extension
+*   Go to `chrome://extensions/` in any Chromium browser.
+*   Enable **"Developer mode"**.
+*   Click **"Load unpacked"** and select the `one-for-all-extension` folder.
 
-- Python 3.x installed on your system.
-- Elevated privileges (run as Administrator on Windows or with `sudo` on Linux/macOS).
-- Git installed (optional, for cloning the repository).
+### 3. Automated Updates
+To keep your filters fresh without manual effort:
+*   Open the "One for All Control Panel".
+*   Click **"Schedule Weekly Updates"**.
+*   This creates a Windows Task that runs every Sunday at 3:00 AM in `--silent` mode, updating your hosts file and AdGuard Home automatically.
 
-### Steps
+### 4. Maintenance
+*   **Dashboard:** View your DNS stats at `http://localhost:3000`.
+*   **Revert:** Run the Python script and click **"Revert Changes"** to restore your system to its original state.
 
-1. Clone this repository:
-   ```bash
-   git clone https://github.com/<your-username>/one-for-all.git
-   cd one-for-all 
-2. Install required dependencies:
-   ```bash
-   pip install requests
-3. Run the script:
-   On Windows, Linux/macOS:
-      ```bash
-      python one_for_all.py
+---
 
-      sudo python3 one_for_all.py
-      
-4. Follow the on-screen instructions provided by the GUI wizard.
-
-## Usage
-Once installed:
-
-Access AdGuard Home's web interface at http://localhost:3000 to configure additional settings.
-Use the custom browser extension by loading it as an unpacked extension in your browser.
-
-## Third-Party Software
-This project uses the following third-party software:
-
-AdGuard Home : A network-wide ad blocker and DNS server.
-Repository: https://github.com/AdguardTeam/AdGuardHome
-License: GNU General Public License v3.0 (GPLv3)
-EasyList : A popular ad-blocking filter list.
-Source: https://easylist.to/easylist/easylist.txt
-
-## Contributing
-Contributions are welcome! If you'd like to contribute to this project, please follow these steps:
-
-## Fork the repository.
-Create a new branch (git checkout -b feature/YourFeatureName).
-Commit your changes (git commit -m "Add YourFeatureName").
-Push to the branch (git push origin feature/YourFeatureName).
-Open a pull request.
-Please ensure your code adheres to the existing style and includes appropriate documentation.
+## 🔒 Security Philosophy
+"One for All" is built on the principle of **"Noise over Silence."** Instead of just blocking (which makes you unique), it adds jitter and standardizes your profile so you blend into the most common crowd of web users.

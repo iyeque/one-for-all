@@ -1,29 +1,20 @@
-
 {
   "manifest_version": 3,
   "name": "One for All",
-  "version": "1.0",
-  "description": "A comprehensive ad blocker that blocks ads everywhere.",
-  "permissions": [
-    "declarativeNetRequest",
-    "tabs",
-    "activeTab",
-    "storage",
-    "webRequest",
-    "webRequestBlocking"
-  ],
+  "version": "1.2",
+  "description": "Professional-grade ad blocker and privacy suite.",
+  "permissions": ["declarativeNetRequest", "tabs", "activeTab", "storage", "alarms", "scripting", "privacy"],
   "host_permissions": ["*://*/*"],
-  "background": {
-    "service_worker": "background.js"
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [{
+    "matches": ["<all_urls>"],
+    "js": ["utils/dom-utils.js", "privacy-shield.js", "content.js", "cookie-consent.js"],
+    "run_at": "document_start"
+  }],
+  "icons": { "16": "icon.png", "32": "icon.png", "48": "icon.png", "128": "icon.png" },
+  "action": { 
+    "default_popup": "popup.html",
+    "default_icon": { "16": "icon.png", "32": "icon.png", "48": "icon.png", "128": "icon.png" }
   },
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content.js", "cookie-consent.js"],
-      "run_at": "document_start"
-    }
-  ],
-  "icons": {
-    "48": "icon.png"
-  }
+  "options_page": "settings.html"
 }
