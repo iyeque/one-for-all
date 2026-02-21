@@ -6,11 +6,19 @@
   "permissions": ["declarativeNetRequest", "tabs", "activeTab", "storage", "alarms", "scripting", "privacy"],
   "host_permissions": ["*://*/*"],
   "background": { "service_worker": "background.js" },
-  "content_scripts": [{
-    "matches": ["<all_urls>"],
-    "js": ["utils/dom-utils.js", "privacy-shield.js", "content.js", "cookie-consent.js"],
-    "run_at": "document_start"
-  }],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["privacy-shield.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["utils/dom-utils.js", "content.js", "cookie-consent.js"],
+      "run_at": "document_start"
+    }
+  ],
   "icons": { "16": "icon.png", "32": "icon.png", "48": "icon.png", "128": "icon.png" },
   "action": { 
     "default_popup": "popup.html",

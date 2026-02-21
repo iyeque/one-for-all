@@ -215,11 +215,17 @@ def update_hosts_file(progress_callback=None):
         return False
 
     ad_domains = set()
+    excluded_from_hosts = {'youtube.com', 'google.com', 'googlevideo.com', 'ytimg.com', 'ggpht.com', 'static.doubleclick.net'}
+    
     for line in response.text.splitlines():
-        if line.startswith("||") and not line.endswith("^"):
+        line = line.strip()
+        if line.startswith("||"):
+            # Extract domain: ||example.com^$options -> example.com
             domain = line[2:].split("^")[0]
-            if domain:
-                ad_domains.add(domain)
+            if domain and domain not in excluded_from_hosts:
+                # Basic validation to ensure it's a domain-like string
+                if "." in domain and not any(c in domain for c in ["/", "*", "@", "%"]):
+                    ad_domains.add(domain)
     
     # Read existing hosts content
     try:
@@ -745,11 +751,19 @@ def setup_browser_extension(progress_callback=None):
   "permissions": ["declarativeNetRequest", "tabs", "activeTab", "storage", "alarms", "scripting", "privacy"],
   "host_permissions": ["*://*/*"],
   "background": { "service_worker": "background.js" },
-  "content_scripts": [{
-    "matches": ["<all_urls>"],
-    "js": ["utils/dom-utils.js", "privacy-shield.js", "content.js", "cookie-consent.js"],
-    "run_at": "document_start"
-  }],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["privacy-shield.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["utils/dom-utils.js", "content.js", "cookie-consent.js"],
+      "run_at": "document_start"
+    }
+  ],
   "icons": { "16": "icon.png", "32": "icon.png", "48": "icon.png", "128": "icon.png" },
   "action": { 
     "default_popup": "popup.html",
@@ -763,12 +777,12 @@ def setup_browser_extension(progress_callback=None):
     write_ext_file("privacy-shield.js", """
 (function() {
   'use strict';
-  const shims = {
-    ga: function() { console.log('One for All: Shimmed GA'); },
-    gtag: function() { console.log('One for All: Shimmed GTAG'); },
-    fbq: function() { console.log('One for All: Shimmed FBQ'); }
-  };
-  const jitter = () => (Math.random() - 0.5) * 0.0001;
+  // Shims for tracking scripts
+  window.ga = window.ga || function() { (window.ga.q = window.ga.q || []).push(arguments); };
+  window.gtag = window.gtag || function() { (window.dataLayer = window.dataLayer || []).push(arguments); };
+  window.fbq = window.fbq || function() { (window.fbq.q = window.fbq.q || []).push(arguments); };
+  
+  // Fingerprint Jittering
   const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
   HTMLCanvasElement.prototype.toDataURL = function() {
     const ctx = this.getContext('2d');
@@ -780,18 +794,14 @@ def setup_browser_extension(progress_callback=None):
     return originalToDataURL.apply(this, arguments);
   };
   Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
-  const script = document.createElement('script');
-  script.textContent = `window.ga=${shims.ga.toString()};window.gtag=${shims.gtag.toString()};window.fbq=${shims.fbq.toString()};`;
-  (document.head || document.documentElement).appendChild(script);
-  script.remove();
 })();
 """)
 
     # 3. Background (Rules, WebRTC, & Status Check)
     write_ext_file("background.js", """
 const adBlockingRules = [
-  { id: 1, priority: 1, action: { type: 'block' }, condition: { urlFilter: '*ads*', resourceTypes: ['script', 'image', 'xmlhttprequest', 'sub_frame'] } },
-  { id: 6, priority: 2, action: { type: 'modifyHeaders', requestHeaders: [{ header: 'referer', operation: 'remove' }, { header: 'x-client-data', operation: 'remove' }] }, condition: { urlFilter: '*', domainType: 'thirdParty' } },
+  { id: 1, priority: 1, action: { type: 'block' }, condition: { urlFilter: '*ads*', excludedDomains: ['youtube.com', 'google.com', 'googlevideo.com'], resourceTypes: ['script', 'image', 'xmlhttprequest', 'sub_frame'] } },
+  { id: 6, priority: 2, action: { type: 'modifyHeaders', requestHeaders: [{ header: 'referer', operation: 'remove' }, { header: 'x-client-data', operation: 'remove' }] }, condition: { urlFilter: '*', domainType: 'thirdParty', excludedDomains: ['youtube.com', 'google.com', 'googlevideo.com', 'ytimg.com', 'ggpht.com'] } },
   { id: 7, priority: 2, action: { type: 'modifyHeaders', requestHeaders: [{ header: 'user-agent', operation: 'set', value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36' }] }, condition: { urlFilter: '*' } }
 ];
 

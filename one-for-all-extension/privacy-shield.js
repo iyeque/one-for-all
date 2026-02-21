@@ -1,11 +1,11 @@
 (function() {
   'use strict';
-  const shims = {
-    ga: function() { console.log('One for All: Shimmed GA'); },
-    gtag: function() { console.log('One for All: Shimmed GTAG'); },
-    fbq: function() { console.log('One for All: Shimmed FBQ'); }
-  };
-  const jitter = () => (Math.random() - 0.5) * 0.0001;
+  // Shims for tracking scripts
+  window.ga = window.ga || function() { (window.ga.q = window.ga.q || []).push(arguments); };
+  window.gtag = window.gtag || function() { (window.dataLayer = window.dataLayer || []).push(arguments); };
+  window.fbq = window.fbq || function() { (window.fbq.q = window.fbq.q || []).push(arguments); };
+  
+  // Fingerprint Jittering
   const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
   HTMLCanvasElement.prototype.toDataURL = function() {
     const ctx = this.getContext('2d');
@@ -17,8 +17,4 @@
     return originalToDataURL.apply(this, arguments);
   };
   Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
-  const script = document.createElement('script');
-  script.textContent = `window.ga=${shims.ga.toString()};window.gtag=${shims.gtag.toString()};window.fbq=${shims.fbq.toString()};`;
-  (document.head || document.documentElement).appendChild(script);
-  script.remove();
 })();
