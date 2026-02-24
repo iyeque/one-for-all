@@ -35,7 +35,9 @@ def run_full_setup(progress_callback=None):
         wait_for_service("http://localhost:3000")
         
         # 5. System DNS
-        if not change_dns_settings(progress_callback): return False
+        if not change_dns_settings(progress_callback):
+            logger.warning("System-wide DNS configuration failed or timed out. You may need to set your DNS to 127.0.0.1 manually if you want to use AdGuard Home.")
+            if progress_callback: progress_callback(40, "DNS config failed (non-fatal)")
         
         # 6. Browser Extension
         if not setup_browser_extension(progress_callback): return False
