@@ -215,7 +215,7 @@ def update_hosts_file(progress_callback=None):
         return False
 
     ad_domains = set()
-    excluded_from_hosts = {'youtube.com', 'google.com', 'googlevideo.com', 'ytimg.com', 'ggpht.com', 'static.doubleclick.net'}
+    excluded_from_hosts = {'youtube.com', 'google.com', 'googlevideo.com', 'ytimg.com', 'ggpht.com', 'static.doubleclick.net', 'hianime.to', 'megacloud.tv', 'rapidcloud.cc'}
     
     for line in response.text.splitlines():
         line = line.strip()
@@ -317,8 +317,8 @@ def flush_dns_cache(progress_callback=None):
     for attempt in range(2):
         try:
             if platform.system() == "Windows":
-                # Increased timeout to 20 seconds for slow systems
-                subprocess.run(["ipconfig", "/flushdns"], check=True, timeout=20)
+                # Increased timeout to 60 seconds for slow systems
+                subprocess.run(["ipconfig", "/flushdns"], check=True, timeout=60)
             elif platform.system() == "Darwin":
                 subprocess.run(["dscacheutil", "-flushcache"], check=True, timeout=10)
                 subprocess.run(["sudo", "killall", "-HUP", "mDNSResponder"], check=True, timeout=10)
@@ -481,7 +481,7 @@ def change_dns_settings_windows(progress_callback=None):
         # even when it successfully sets it.
         subprocess.run(
             ["netsh", "interface", "ip", "set", "dns", f"name={active_interface}", "source=static", f"address={dns_servers[0]}", "register=primary"],
-            timeout=15
+            timeout=60
         )
 
         # Add secondary IPv4 DNS
@@ -489,7 +489,7 @@ def change_dns_settings_windows(progress_callback=None):
             progress_callback(34, "Setting secondary IPv4 DNS...")
         subprocess.run(
             ["netsh", "interface", "ip", "add", "dns", f"name={active_interface}", f"address={dns_servers[1]}", "index=2"],
-            timeout=15
+            timeout=60
         )
 
         # Set IPv6 DNS
@@ -499,11 +499,11 @@ def change_dns_settings_windows(progress_callback=None):
         try:
             subprocess.run(
                 ["netsh", "interface", "ipv6", "set", "dns", f"name={active_interface}", "source=static", f"address={dns_ipv6[0]}", "register=primary"],
-                timeout=15
+                timeout=60
             )
             subprocess.run(
                 ["netsh", "interface", "ipv6", "add", "dns", f"name={active_interface}", f"address={dns_ipv6[1]}", "index=2"],
-                timeout=15
+                timeout=60
             )
             logger.info("IPv6 DNS settings updated.")
         except Exception as e:
@@ -800,8 +800,8 @@ def setup_browser_extension(progress_callback=None):
     # 3. Background (Rules, WebRTC, & Status Check)
     write_ext_file("background.js", """
 const adBlockingRules = [
-  { id: 1, priority: 1, action: { type: 'block' }, condition: { urlFilter: '*ads*', excludedDomains: ['youtube.com', 'google.com', 'googlevideo.com'], resourceTypes: ['script', 'image', 'xmlhttprequest', 'sub_frame'] } },
-  { id: 6, priority: 2, action: { type: 'modifyHeaders', requestHeaders: [{ header: 'referer', operation: 'remove' }, { header: 'x-client-data', operation: 'remove' }] }, condition: { urlFilter: '*', domainType: 'thirdParty', excludedDomains: ['youtube.com', 'google.com', 'googlevideo.com', 'ytimg.com', 'ggpht.com'] } },
+  { id: 1, priority: 1, action: { type: 'block' }, condition: { urlFilter: '*ads*', excludedDomains: ['youtube.com', 'google.com', 'googlevideo.com', 'hianime.to', 'megacloud.tv', 'rapidcloud.cc'], resourceTypes: ['script', 'image', 'xmlhttprequest', 'sub_frame'] } },
+  { id: 6, priority: 2, action: { type: 'modifyHeaders', requestHeaders: [{ header: 'referer', operation: 'remove' }, { header: 'x-client-data', operation: 'remove' }] }, condition: { urlFilter: '*', domainType: 'thirdParty', excludedDomains: ['youtube.com', 'google.com', 'googlevideo.com', 'ytimg.com', 'ggpht.com', 'hianime.to', 'megacloud.tv', 'rapidcloud.cc'] } },
   { id: 7, priority: 2, action: { type: 'modifyHeaders', requestHeaders: [{ header: 'user-agent', operation: 'set', value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36' }] }, condition: { urlFilter: '*' } }
 ];
 

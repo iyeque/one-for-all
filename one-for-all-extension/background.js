@@ -1,6 +1,6 @@
 const adBlockingRules = [
-  { id: 1, priority: 1, action: { type: 'block' }, condition: { urlFilter: '*ads*', excludedDomains: ['youtube.com', 'google.com', 'googlevideo.com'], resourceTypes: ['script', 'image', 'xmlhttprequest', 'sub_frame'] } },
-  { id: 6, priority: 2, action: { type: 'modifyHeaders', requestHeaders: [{ header: 'referer', operation: 'remove' }, { header: 'x-client-data', operation: 'remove' }] }, condition: { urlFilter: '*', domainType: 'thirdParty', excludedDomains: ['youtube.com', 'google.com', 'googlevideo.com', 'ytimg.com', 'ggpht.com'] } },
+  { id: 1, priority: 1, action: { type: 'block' }, condition: { urlFilter: '*ads*', excludedDomains: ['youtube.com', 'google.com', 'googlevideo.com', 'hianime.to', 'megacloud.tv', 'rapidcloud.cc'], resourceTypes: ['script', 'image', 'xmlhttprequest', 'sub_frame'] } },
+  { id: 6, priority: 2, action: { type: 'modifyHeaders', requestHeaders: [{ header: 'referer', operation: 'remove' }, { header: 'x-client-data', operation: 'remove' }] }, condition: { urlFilter: '*', domainType: 'thirdParty', excludedDomains: ['youtube.com', 'google.com', 'googlevideo.com', 'ytimg.com', 'ggpht.com', 'hianime.to', 'megacloud.tv', 'rapidcloud.cc'] } },
   { id: 7, priority: 2, action: { type: 'modifyHeaders', requestHeaders: [{ header: 'user-agent', operation: 'set', value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36' }] }, condition: { urlFilter: '*' } }
 ];
 
