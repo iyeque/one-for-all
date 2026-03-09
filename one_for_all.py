@@ -104,6 +104,18 @@ DEFAULT_CONFIG = {
     ],
     "hosts_redirect_ip": "127.0.0.1",
     "filter_list_url": "https://easylist.to/easylist/easylist.txt",
+    "hosts_excluded_domains": [
+        "youtube.com",
+        "google.com",
+        "googlevideo.com",
+        "ytimg.com",
+        "ggpht.com",
+        "static.doubleclick.net",
+        "hianime.to",
+        "megacloud.tv",
+        "rapidcloud.cc",
+        "moltbook.com"
+    ],
     "request_timeout": 10,
     "adguard_home_urls": {
         "Windows": "https://static.adguard.com/adguardhome/release/AdGuardHome_windows_amd64.zip",
@@ -217,7 +229,12 @@ def update_hosts_file(progress_callback=None):
         return False
 
     ad_domains = set()
-    excluded_from_hosts = {'youtube.com', 'google.com', 'googlevideo.com', 'ytimg.com', 'ggpht.com', 'static.doubleclick.net', 'hianime.to', 'megacloud.tv', 'rapidcloud.cc'}
+    default_excluded = {
+        'youtube.com', 'google.com', 'googlevideo.com', 'ytimg.com', 'ggpht.com',
+        'static.doubleclick.net', 'hianime.to', 'megacloud.tv', 'rapidcloud.cc',
+        'moltbook.com'
+    }
+    excluded_from_hosts = set(config.get("hosts_excluded_domains", list(default_excluded)))
     
     for line in response.text.splitlines():
         line = line.strip()
@@ -802,8 +819,8 @@ def setup_browser_extension(progress_callback=None):
     # 3. Background (Rules, WebRTC, & Status Check)
     write_ext_file("background.js", """
 const adBlockingRules = [
-  { id: 1, priority: 1, action: { type: 'block' }, condition: { urlFilter: '*ads*', excludedDomains: ['youtube.com', 'google.com', 'googlevideo.com', 'hianime.to', 'megacloud.tv', 'rapidcloud.cc'], resourceTypes: ['script', 'image', 'xmlhttprequest', 'sub_frame'] } },
-  { id: 6, priority: 2, action: { type: 'modifyHeaders', requestHeaders: [{ header: 'referer', operation: 'remove' }, { header: 'x-client-data', operation: 'remove' }] }, condition: { urlFilter: '*', domainType: 'thirdParty', excludedDomains: ['youtube.com', 'google.com', 'googlevideo.com', 'ytimg.com', 'ggpht.com', 'hianime.to', 'megacloud.tv', 'rapidcloud.cc'] } },
+  { id: 1, priority: 1, action: { type: 'block' }, condition: { urlFilter: '*ads*', excludedDomains: ['youtube.com', 'google.com', 'googlevideo.com', 'hianime.to', 'megacloud.tv', 'rapidcloud.cc', 'moltbook.com'], resourceTypes: ['script', 'image', 'xmlhttprequest', 'sub_frame'] } },
+  { id: 6, priority: 2, action: { type: 'modifyHeaders', requestHeaders: [{ header: 'referer', operation: 'remove' }, { header: 'x-client-data', operation: 'remove' }] }, condition: { urlFilter: '*', domainType: 'thirdParty', excludedDomains: ['youtube.com', 'google.com', 'googlevideo.com', 'ytimg.com', 'ggpht.com', 'hianime.to', 'megacloud.tv', 'rapidcloud.cc', 'moltbook.com'] } },
   { id: 7, priority: 2, action: { type: 'modifyHeaders', requestHeaders: [{ header: 'user-agent', operation: 'set', value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36' }] }, condition: { urlFilter: '*' } }
 ];
 
