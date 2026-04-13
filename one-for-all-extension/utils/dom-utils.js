@@ -1,4 +1,4 @@
-export function hideElements(selectors) {
+function hideElements(selectors) {
   selectors.forEach(s => {
     document.querySelectorAll(s).forEach(el => { el.style.display = 'none'; });
   });

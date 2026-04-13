@@ -11,7 +11,7 @@ async function init() {
 chrome.runtime.onInstalled.addListener(init);
 init();
 
-// Handle status checks from settings page (Bypasses CORS)
+// Handle status checks from settings page
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'checkStatus') {
     const ports = ['3000', '80'];

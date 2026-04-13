@@ -111,10 +111,12 @@ DEFAULT_CONFIG = {
         "ytimg.com",
         "ggpht.com",
         "static.doubleclick.net",
-        "hianime.to",
+        "vidbox.cc",
         "megacloud.tv",
         "rapidcloud.cc",
-        "moltbook.com"
+        "moltbook.com",
+        "cineby.gd",
+        "clameboyards.com"
     ],
     "request_timeout": 10,
     "adguard_home_urls": {
@@ -358,10 +360,11 @@ def flush_dns_cache(progress_callback=None):
     return False
 
 def change_dns_settings_macos(progress_callback=None):
-    """Change DNS settings on macOS using networksetup."""
+    """Change DNS settings on macOS using networksetup (IPv4 & IPv6)."""
     logger.info("Changing DNS settings on macOS...")
     config = load_config()
-    dns_servers = config.get("dns_servers", ["94.140.14.14", "94.140.15.15"])
+    dns_servers = config.get("dns_servers", ["127.0.0.1", "1.1.1.1"])
+    dns_servers_ipv6 = config.get("dns_servers_ipv6", ["::1", "2606:4700:4700::1111"])
     
     try:
         # Get active network services
@@ -373,19 +376,28 @@ def change_dns_settings_macos(progress_callback=None):
             info = subprocess.run(["networksetup", "-getinfo", service], capture_output=True, text=True)
             if "IP address:" in info.stdout and "none" not in info.stdout.lower():
                 if progress_callback: progress_callback(30, f"Configuring {service}...")
+                
+                # Set IPv4 DNS
                 subprocess.run(["networksetup", "-setdnsservers", service] + dns_servers, check=True)
-                logger.info(f"DNS set for macOS service: {service}")
-        
+                
+                # Set IPv6 DNS
+                try:
+                    subprocess.run(["networksetup", "-setv6dnsservers", service] + dns_servers_ipv6, check=True)
+                    logger.info(f"IPv4 and IPv6 DNS set for macOS service: {service}")
+                except subprocess.CalledProcessError:
+                    logger.warning(f"Failed to set IPv6 DNS for {service}. Only IPv4 updated.")
+                    
         return True
     except Exception as e:
         logger.error(f"Failed to set macOS DNS: {e}")
         return False
 
 def change_dns_settings_linux(progress_callback=None):
-    """Change DNS settings on Linux using nmcli (NetworkManager)."""
+    """Change DNS settings on Linux using nmcli (IPv4 & IPv6)."""
     logger.info("Changing DNS settings on Linux...")
     config = load_config()
-    dns_str = " ".join(config.get("dns_servers", ["94.140.14.14", "94.140.15.15"]))
+    dns_str = " ".join(config.get("dns_servers", ["127.0.0.1", "1.1.1.1"]))
+    dns_str_ipv6 = " ".join(config.get("dns_servers_ipv6", ["::1", "2606:4700:4700::1111"]))
     
     try:
         # Try NetworkManager (nmcli)
@@ -394,12 +406,20 @@ def change_dns_settings_linux(progress_callback=None):
             for line in result.stdout.splitlines():
                 name = line.split(":")[0]
                 if progress_callback: progress_callback(30, f"Configuring {name}...")
+                
+                # Configure IPv4
                 subprocess.run(["nmcli", "connection", "modify", name, "ipv4.dns", dns_str, "ipv4.ignore-auto-dns", "yes"], check=True)
+                
+                # Configure IPv6
+                try:
+                    subprocess.run(["nmcli", "connection", "modify", name, "ipv6.dns", dns_str_ipv6, "ipv6.ignore-auto-dns", "yes"], check=True)
+                except subprocess.CalledProcessError:
+                    logger.warning(f"IPv6 DNS configuration failed for {name}.")
+                
                 subprocess.run(["nmcli", "connection", "up", name], check=True)
             return True
         
-        # Fallback for systems without NetworkManager (e.g., direct resolv.conf - less ideal)
-        logger.warning("NetworkManager not found or no active connections. DNS set may be incomplete.")
+        logger.warning("NetworkManager not found or no active connections.")
         return False
     except Exception as e:
         logger.error(f"Failed to set Linux DNS: {e}")
@@ -419,21 +439,25 @@ def change_dns_settings(progress_callback=None):
         return False
 
 def revert_dns_settings_macos(progress_callback=None):
-    """Restore macOS DNS to Empty/Automatic."""
+    """Restore macOS DNS to Empty/Automatic (IPv4 & IPv6)."""
     try:
         result = subprocess.run(["networksetup", "-listallnetworkservices"], capture_output=True, text=True)
         services = [s for s in result.stdout.splitlines() if "*" not in s and s]
         for service in services:
             subprocess.run(["networksetup", "-setdnsservers", service, "Empty"], check=True)
+            try:
+                subprocess.run(["networksetup", "-setv6dnsservers", service, "Empty"], check=True)
+            except: pass
         return True
     except Exception: return False
 
 def revert_dns_settings_linux(progress_callback=None):
-    """Restore Linux DNS to Automatic."""
+    """Restore Linux DNS to Automatic (IPv4 & IPv6)."""
     try:
         result = subprocess.run(["nmcli", "-t", "-f", "NAME", "connection", "show", "--active"], capture_output=True, text=True)
         for name in result.stdout.splitlines():
             subprocess.run(["nmcli", "connection", "modify", name, "ipv4.ignore-auto-dns", "no"], check=True)
+            subprocess.run(["nmcli", "connection", "modify", name, "ipv6.ignore-auto-dns", "no"], check=True)
             subprocess.run(["nmcli", "connection", "up", name], check=True)
         return True
     except Exception: return False
@@ -448,6 +472,35 @@ def revert_dns_settings(progress_callback=None):
     elif system == "Linux":
         return revert_dns_settings_linux(progress_callback)
     return False
+
+def schedule_task_unix():
+    """Create a Cron job for weekly silent updates on macOS/Linux."""
+    try:
+        script_path = os.path.abspath(__file__)
+        python_exe = sys.executable
+        # Weekly on Sunday at 3:00 AM
+        cron_job = f"0 3 * * 0 {python_exe} {script_path} --silent > /dev/null 2>&1\n"
+        
+        # Get existing crontab
+        current_cron = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
+        
+        if script_path in current_cron:
+            logger.info("Cron job already exists.")
+            return True
+            
+        new_cron = current_cron + cron_job
+        process = subprocess.Popen(["crontab", "-"], stdin=subprocess.PIPE)
+        process.communicate(input=new_cron.encode())
+        
+        if process.returncode == 0:
+            logger.info("Weekly cron job created successfully.")
+            return True
+        else:
+            logger.error("Failed to create cron job.")
+            return False
+    except Exception as e:
+        logger.error(f"Failed to schedule Unix task: {e}")
+        return False
 
 def change_dns_settings_windows(progress_callback=None):
     """Change DNS settings on Windows with progress reporting and smarter interface selection."""
@@ -751,17 +804,9 @@ def setup_browser_extension(progress_callback=None):
     os.makedirs(extension_dir, exist_ok=True)
     os.makedirs(os.path.join(extension_dir, "utils"), exist_ok=True)
 
-    # Helper to write files
-    def write_ext_file(name, content):
-        path = os.path.join(extension_dir, name)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content.strip())
-        # Force the OS to see a change by updating the timestamp
-        os.utime(path, None)
-        logger.info(f"Extension file ensured: {name}")
-
-    # 1. Manifest
-    write_ext_file("manifest.json", """
+    # 1. Define Extension Files
+    extension_files = {
+        "manifest.json": """
 {
   "manifest_version": 3,
   "name": "One for All",
@@ -790,10 +835,8 @@ def setup_browser_extension(progress_callback=None):
   },
   "options_page": "settings.html"
 }
-""")
-
-    # 2. Privacy Shield (Shimming & Fingerprinting)
-    write_ext_file("privacy-shield.js", """
+""",
+        "privacy-shield.js": """
 (function() {
   'use strict';
   // Shims for tracking scripts
@@ -814,10 +857,8 @@ def setup_browser_extension(progress_callback=None):
   };
   Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
 })();
-""")
-
-    # 3. Background (Rules, WebRTC, & Status Check)
-    write_ext_file("background.js", """
+""",
+        "background.js": """
 const adBlockingRules = [
   { id: 1, priority: 1, action: { type: 'block' }, condition: { urlFilter: '*ads*', excludedDomains: ['youtube.com', 'google.com', 'googlevideo.com', 'hianime.to', 'megacloud.tv', 'rapidcloud.cc', 'moltbook.com'], resourceTypes: ['script', 'image', 'xmlhttprequest', 'sub_frame'] } },
   { id: 6, priority: 2, action: { type: 'modifyHeaders', requestHeaders: [{ header: 'referer', operation: 'remove' }, { header: 'x-client-data', operation: 'remove' }] }, condition: { urlFilter: '*', domainType: 'thirdParty', excludedDomains: ['youtube.com', 'google.com', 'googlevideo.com', 'ytimg.com', 'ggpht.com', 'hianime.to', 'megacloud.tv', 'rapidcloud.cc', 'moltbook.com'] } },
@@ -831,7 +872,7 @@ async function init() {
 chrome.runtime.onInstalled.addListener(init);
 init();
 
-// Handle status checks from settings page (Bypasses CORS)
+// Handle status checks from settings page
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'checkStatus') {
     const ports = ['3000', '80'];
@@ -855,117 +896,81 @@ function setWebRTC(isEnabled) {
   }
 }
 chrome.storage.sync.get("isEnabled", (r) => setWebRTC(r.isEnabled !== false));
-""")
-
-    # 4. DOM Utils
-    write_ext_file("utils/dom-utils.js", """
-export function hideElements(selectors) {
+""",
+        "utils/dom-utils.js": """
+function hideElements(selectors) {
   selectors.forEach(s => {
     document.querySelectorAll(s).forEach(el => { el.style.display = 'none'; });
   });
 }
-""")
+""",
+        "content.js": """
+(function() {
+  const adSelectors = [
+    '.ad-container', '.adsbygoogle', '[id^="ad-"]', '[class^="ad-"]',
+    '.sponsored-post', '.promoted-content', '.advertisement', '.layout-slot-header'
+  ];
+  
+  const clean = () => {
+    if (typeof hideElements === 'function') hideElements(adSelectors);
+  };
 
-    # 5. Content Scripts
-    write_ext_file("content.js", "console.log('One for All: Content Active');")
-    write_ext_file("cookie-consent.js", "console.log('One for All: Cookie Shield Active');")
+  clean();
+  const observer = new MutationObserver(clean);
+  observer.observe(document.body, { childList: true, subtree: true });
+  console.log('One for All: Content Shield Active');
+})();
+""",
+        "cookie-consent.js": """
+(function() {
+  const cookieSelectors = [
+    '[id*="cookie-consent"]', '[class*="cookie-banner"]',
+    '.qc-cmp2-container', '#onetrust-consent-sdk',
+    '.trustarc-banner-container', '#didomi-popup', '.cookie-notice'
+  ];
+  
+  const clean = () => {
+    if (typeof hideElements === 'function') hideElements(cookieSelectors);
+  };
 
-    # 6. UI (Popup & Settings)
-    write_ext_file("popup.html", """
-<html>
-<head><title>One for All</title></head>
-<body style='width:200px;padding:10px;font-family:sans-serif;'>
-  <h3>One for All</h3>
-  <p>Privacy Active</p>
-  <hr>
-  <a href='#' id='openSettings'>Settings</a>
-  <script src="popup.js"></script>
-</body>
-</html>
-""".strip())
-    
-    write_ext_file("popup.js", """
-document.addEventListener('DOMContentLoaded', () => {
-  const btn = document.getElementById('openSettings');
-  if (btn) {
-    btn.addEventListener('click', (e) => {
-      e.preventDefault();
-      chrome.runtime.openOptionsPage();
-    });
-  }
-});
-""".strip())
-    
-    write_ext_file("settings.html", """
-<!DOCTYPE html>
-<html>
-<head><title>One for All Settings</title><style>body{font-family:sans-serif;padding:20px;}h1{color:#007bff;}</style></head>
-<body>
-  <h1>One for All Settings</h1>
-  <p>Your privacy suite is active and managed by the system-wide controller.</p>
-  <div id="stats">Checking AdGuard Home connection...</div>
-  <script src="settings.js"></script>
-</body>
-</html>
-""".strip())
-
-    write_ext_file("settings.js", """
-document.addEventListener('DOMContentLoaded', () => {
-  const stats = document.getElementById('stats');
-  chrome.runtime.sendMessage({ action: 'checkStatus' }, (response) => {
-    if (response && response.status === 'online') {
-      stats.textContent = 'AdGuard Home is Connected and Filtering.';
-      stats.style.color = 'green';
-    } else {
-      stats.textContent = 'AdGuard Home is not responding. Check the Control Panel.';
-      stats.style.color = 'red';
+  clean();
+  const observer = new MutationObserver(clean);
+  observer.observe(document.body, { childList: true, subtree: true });
+  console.log('One for All: Cookie Shield Active');
+})();
+""",
+        "popup.html": "<html><body style='width:200px;padding:10px;font-family:sans-serif;'><h3>One for All</h3><p>Privacy Active</p><hr><a href='#' id='openSettings'>Settings</a><script src='popup.js'></script></body></html>",
+        "popup.js": "document.addEventListener('DOMContentLoaded', () => { document.getElementById('openSettings').addEventListener('click', (e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); }); });",
+        "settings.html": "<!DOCTYPE html><html><head><title>One for All Settings</title><style>body{font-family:sans-serif;padding:20px;}h1{color:#007bff;}</style></head><body><h1>One for All Settings</h1><p>Your privacy suite is active.</p><div id='stats'>Checking AdGuard Home connection...</div><script src='settings.js'></script></body></html>",
+        "settings.js": "document.addEventListener('DOMContentLoaded', () => { const stats = document.getElementById('stats'); chrome.runtime.sendMessage({ action: 'checkStatus' }, (response) => { if (response && response.status === 'online') { stats.textContent = 'AdGuard Home is Connected.'; stats.style.color = 'green'; } else { stats.textContent = 'AdGuard Home is Offline.'; stats.style.color = 'red'; } }); });"
     }
-  });
-});
-""")
 
-    # 7. Icon
-    icon_path = os.path.join(extension_dir, "icon.png")
-    if not os.path.exists(icon_path):
-        generate_default_icon(icon_path)
+    # 2. Write Files
+    for name, content in extension_files.items():
+        path = os.path.join(extension_dir, name)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content.strip())
+        os.utime(path, None)
+        logger.info(f"Extension file ensured: {name}")
 
+    # 3. Handle Icon
+    custom_icon_path = os.path.join(os.path.dirname(__file__), "assets", "icon.png")
+    icon_dest = os.path.join(extension_dir, "icon.png")
+
+    if os.path.exists(custom_icon_path):
+        try:
+            shutil.copy(custom_icon_path, icon_dest)
+            logger.info("Custom icon applied successfully.")
+        except Exception as e:
+            logger.error(f"Failed to copy custom icon: {e}")
+            generate_default_icon(icon_dest)
+    elif not os.path.exists(icon_dest):
+        logger.info("Custom icon not found, generating default icon.")
+        generate_default_icon(icon_dest)
+
+    logger.info(f"'One for All' browser extension ready at {extension_dir}")
     if progress_callback:
-        progress_callback(100, "Extension generated successfully")
-    return True
-
-    try:
-        if os.path.exists(target_dir):
-            shutil.rmtree(target_dir)
-        shutil.copytree(source_dir, target_dir)
-        logger.info(f"Extension files copied successfully to {target_dir}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to copy extension files: {e}")
-        return False
-    # Use your custom icon
-    custom_icon_path = os.path.join(os.path.dirname(__file__), "assets", "icon.png")  # Path to your custom icon
-    icon_path = os.path.join(extension_dir, "icon.png")
-
-    if not os.path.exists(icon_path):
-        if os.path.exists(custom_icon_path):
-            try:
-                # Copy the custom icon to the extension directory
-                shutil.copy(custom_icon_path, icon_path)
-                logger.info("Custom icon copied successfully.")
-            except Exception as e:
-                logger.error(f"Failed to copy custom icon: {e}")
-                generate_default_icon(icon_path)
-        else:
-            logger.info("Custom icon not found, generating default icon.")
-            generate_default_icon(icon_path)
-    else:
-        logger.info("Icon already exists, skipping copy.")
-
-    logger.info(f"'One for All' browser extension created at {extension_dir}.")
-    logger.info("Manually load the unpacked extension in your browser.")
-    
-    if progress_callback:
-        progress_callback(95, "Browser extension created successfully")
+        progress_callback(100, "Browser extension setup complete")
     return True
 
 def revert_dns_settings_windows(progress_callback=None):
@@ -1080,7 +1085,13 @@ def gui_wizard():
             messagebox.showerror("Error", "Please run as Administrator to schedule tasks.")
             return
             
-        if schedule_task_windows():
+        success = False
+        if platform.system() == "Windows":
+            success = schedule_task_windows()
+        else:
+            success = schedule_task_unix()
+            
+        if success:
             messagebox.showinfo("Success", "Weekly background updates scheduled for Sundays at 3:00 AM.")
         else:
             messagebox.showerror("Error", "Failed to schedule task. See logs for details.")

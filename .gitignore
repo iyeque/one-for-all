@@ -33,5 +33,6 @@ adguardhome.zip
 adguardhome.tar.gz
 
 # Browser extension temporary files
-one-for-all-extension/*.crx
+*.crx
+*.pem
 one-for-all-extension/*.zip
