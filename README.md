@@ -64,7 +64,9 @@ python one_for_all.py
 To keep your filters fresh without manual effort:
 *   Open the "One for All Control Panel".
 *   Click **"Schedule Weekly Updates"**.
-*   This creates a Windows Task that runs every Sunday at 3:00 AM in `--silent` mode, updating your hosts file and AdGuard Home automatically.
+*   **Windows**: Creates a Scheduled Task.
+*   **macOS/Linux**: Configures a system `cron` job.
+*   The script runs every Sunday at 3:00 AM in `--silent` mode, updating your hosts file and AdGuard Home automatically.
 
 ### 4. Maintenance
 *   **Dashboard:** View your DNS stats at `http://localhost:3000`.
@@ -74,3 +76,4 @@ To keep your filters fresh without manual effort:
 
 ## 🔒 Security Philosophy
 "One for All" is built on the principle of **"Noise over Silence."** Instead of just blocking (which makes you unique), it adds jitter and standardizes your profile so you blend into the most common crowd of web users.
+dizes your profile so you blend into the most common crowd of web users.
